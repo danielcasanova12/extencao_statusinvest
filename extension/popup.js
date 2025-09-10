@@ -161,16 +161,28 @@
     btnUpload.addEventListener('click', async () => {
       const file = csvInput && csvInput.files && csvInput.files[0];
       if (!file) { setStatus('Nenhum arquivo selecionado'); return; }
-      const { items } = await loadItems();
-      const item = { id: Date.now(), name: file.name, size: file.size, type: file.type, createdAt: new Date().toISOString() };
-      items.unshift(item);
-      await saveItems(items);
-      await setSelected(item.id);
-      setStatus(`Arquivo salvo: ${file.name}`);
-      if (csvInput) csvInput.value = '';
-      setUploadEnabled(false);
-      setFileName('');
-      await renderList();
+      setStatus('Lendo arquivo...');
+      try {
+        const text = await new Promise((resolve, reject) => {
+          const fr = new FileReader();
+          fr.onload = () => resolve(String(fr.result || ''));
+          fr.onerror = () => reject(fr.error || new Error('read error'));
+          fr.readAsText(file);
+        });
+        const { items } = await loadItems();
+        const item = { id: Date.now(), name: file.name, size: file.size, type: file.type, createdAt: new Date().toISOString(), content: text };
+        items.unshift(item);
+        await saveItems(items);
+        await setSelected(item.id);
+        setStatus(`Arquivo salvo: ${file.name}`);
+        if (csvInput) csvInput.value = '';
+        setUploadEnabled(false);
+        setFileName('');
+        await renderList();
+      } catch (e) {
+        console.error('[popup] erro lendo CSV:', e);
+        setStatus('Falha ao ler o arquivo');
+      }
     });
   }
 
@@ -180,8 +192,22 @@
       const { items, selectedId } = await loadItems();
       const sel = items.find((x) => String(x.id) === String(selectedId));
       if (!sel) { setStatus('Selecione um item salvo para executar.'); return; }
-      console.log('[popup] Executar item selecionado:', sel);
-      setStatus(`Executar: ${sel.name}`);
+      if (!sel.content) { setStatus('Item sem conteúdo. Faça o upload novamente.'); return; }
+      setStatus('Enviando para cálculo...');
+      try {
+        chrome.runtime.sendMessage({ type: 'FM_CALCULAR', csv: sel.content }, (resp) => {
+          if (resp && resp.ok) {
+            const p = resp.json && (resp.json.processed || 0);
+            const diag = resp.json && resp.json.diag;
+            const extra = diag ? ` | lidas: ${diag.parsed_rows}, após filtros: ${diag.after_compute}` : '';
+            setStatus(`Cálculo concluído. Registros inseridos: ${p}${extra}`);
+          } else {
+            setStatus(`Erro: ${resp && resp.error ? resp.error : 'falha desconhecida'}`);
+          }
+        });
+      } catch (e) {
+        setStatus(String(e));
+      }
     });
   }
 

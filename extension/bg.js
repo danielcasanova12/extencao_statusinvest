@@ -2,7 +2,7 @@
 // - Recebe mensagens do content.js
 // - Faz fetch na API e retorna dados
 
-const DEFAULT_API_BASE = 'https://extencao-65j69kpao-daniels-projects-b07af66f.vercel.app';
+const DEFAULT_API_BASE = 'https://extencao-3vpksj95c-daniels-projects-b07af66f.vercel.app';
 
 function getApiBase() {
   return new Promise((resolve) => {
@@ -61,6 +61,24 @@ async function fetchTopNChecklist() {
   if (!resp.ok) throw new Error(`API error: ${resp.status}`);
   const json = await resp.json();
   console.log('[bg] GET_TOPN_CHECKLIST ok. count:', Array.isArray(json?.data) ? json.data.length : 'n/a');
+  return json;
+}
+
+async function getApiToken() {
+  return new Promise((resolve) => {
+    try { chrome.storage.sync.get(['API_TOKEN'], (res) => resolve(res?.API_TOKEN || '')); } catch { resolve(''); }
+  });
+}
+
+async function postFmCalcular(csvText) {
+  const base = await getApiBase();
+  const token = await getApiToken();
+  const url = `${base.replace(/\/$/, '')}/api/formulamagica/calcular`;
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const resp = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ csv: csvText }) });
+  const json = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(json?.error || `HTTP ${resp.status}`);
   return json;
 }
 
@@ -125,6 +143,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({ ok: true, json });
       } catch (err) {
         console.error('[bg] GET_TOPN_CHECKLIST error:', err);
+        sendResponse({ ok: false, error: String(err?.message || err) });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === 'FM_CALCULAR') {
+    (async () => {
+      try {
+        const json = await postFmCalcular(String(message.csv || ''));
+        sendResponse({ ok: true, json });
+      } catch (err) {
+        console.error('[bg] FM_CALCULAR error:', err);
         sendResponse({ ok: false, error: String(err?.message || err) });
       }
     })();
