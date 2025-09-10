@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Painel</title>
+    <style>
+      :root { color-scheme: dark; }
+      body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; background: #0f172a; color: #e5e7eb; }
+      .panel { width: 360px; max-height: 600px; display:flex; flex-direction:column; border:1px solid #1f2937; }
+      .header { display:flex; align-items:center; justify-content:space-between; padding:10px 12px; background:#111827; border-bottom:1px solid #1f2937; }
+      .title { font-weight:700; font-size:14px; }
+      .body { padding:10px 12px; overflow:auto; max-height:520px; }
+      /* search removed */
+      .section-title { font-size:12px; color:#94a3b8; margin:10px 0 6px 2px; }
+      .card { background:#111827; border:1px solid #1f2937; border-radius:10px; padding:10px; margin-bottom:8px; display:flex; align-items:center; justify-content:space-between; }
+      .item { display:flex; align-items:center; gap:10px; }
+      .avatar { width:26px; height:26px; border-radius:6px; background:#0b1220; border:1px solid #334155; display:flex; align-items:center; justify-content:center; font-size:12px; color:#94a3b8; }
+      .name { font-weight:600; color:#f3f4f6; font-size:13px; }
+      .sub { font-size:12px; color:#9ca3af; }
+      .row-actions { display:flex; gap:6px; }
+      .btn { border:1px solid #334155; background:#1f2937; color:#e5e7eb; border-radius:8px; padding:6px 10px; font-size:12px; cursor:pointer; }
+      .btn[disabled] { opacity: .5; cursor: not-allowed; }
+      .footer { display:flex; align-items:center; justify-content:space-around; padding:8px; border-top:1px solid #1f2937; background:#0b1220; }
+      .tab { background:transparent; border:1px solid transparent; color:#9ca3af; padding:6px 8px; border-radius:8px; cursor:pointer; font-size:12px; }
+      .tab.active { color:#e5e7eb; background:#111827; border-color:#1f2937; }
+      a { color: #93c5fd; text-decoration: none; }
+      label { display:block; font-size:12px; color:#cbd5e1; margin-bottom:6px; }
+      input[type="file"] { width:100%; background:#0b1220; color:#f3f4f6; border:1px solid #334155; border-radius:10px; padding:8px; font-size:12px; }
+      .row { display:flex; gap:8px; align-items:center; margin-top:8px; }
+      .list { margin-top:8px; display:flex; flex-direction:column; gap:6px; }
+      .list-item { display:flex; align-items:center; justify-content:space-between; background:#111827; border:1px solid #1f2937; border-radius:10px; padding:8px 10px; }
+      .list-main { display:flex; align-items:center; gap:8px; }
+      .list-name { font-size:13px; color:#f3f4f6; }
+      .list-meta { font-size:11px; color:#9ca3af; }
+      .list-actions { display:flex; gap:6px; }
+      .icon-btn { border:1px solid #334155; background:#1f2937; color:#e5e7eb; border-radius:8px; width:28px; height:28px; display:flex; align-items:center; justify-content:center; cursor:pointer; }
+    </style>
+  </head>
+  <body>
+    <div class="panel">
+      <div class="header"><div class="title">Painel</div></div>
+      <div class="body">
+        <div class="section">
+          <div class="section-title">Ações rápidas</div>
+          <div class="card">
+            <div class="item">
+              <div class="avatar">API</div>
+              <div>
+                <div class="name">Testar API</div>
+                <div class="sub">Consulta /api/fm-last-updated</div>
+              </div>
+            </div>
+            <div class="row-actions">
+              <button class="btn" id="btnPing">Ping</button>
+            </div>
+          </div>
+          <div id="log" class="sub"></div>
+        </div>
+
+        <div class="section" id="csvSection">
+          <div class="section-title">Importar CSV</div>
+          <label for="csvInput">Selecione um arquivo CSV</label>
+          <input type="file" id="csvInput" accept=".csv" />
+          <div id="fileName" class="sub" style="margin-top:6px;"></div>
+          <div class="row">
+            <button class="btn" id="btnUpload" disabled>Upload</button>
+            <button class="btn" id="btnExecutar">Executar</button>
+          </div>
+          <div id="statusArea" class="sub" aria-live="polite" style="margin-top:6px;"></div>
+        </div>
+
+        <div class="section" id="savedSection">
+          <div class="section-title">Arquivos salvos</div>
+          <div id="savedList" class="list"></div>
+        </div>
+      </div>
+      <div class="footer">
+        <button class="tab active">Menu</button>
+        <a class="tab" href="https://statusinvest.com.br/" target="_blank" rel="noreferrer">StatusInvest</a>
+        <button class="tab" id="openOptions">Config</button>
+      </div>
+    </div>
+    <script src="popup.js"></script>
+  </body>
+  </html>

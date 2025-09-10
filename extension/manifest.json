@@ -3,7 +3,9 @@
   "name": "StatusInvest Latest Panel",
   "version": "0.1.0",
   "description": "Injeta um painel no StatusInvest com dados da sua API",
-  "action": {},
+  "action": {
+    "default_popup": "popup.html"
+  },
   "background": {
     "service_worker": "bg.js"
   },
@@ -11,16 +13,6 @@
     "storage"
   ],
   "host_permissions": [
-    "https://statusinvest.com.br/*",
     "https://*.vercel.app/*"
-  ],
-  "content_scripts": [
-    {
-      "matches": [
-        "https://statusinvest.com.br/carteira/patrimonio*"
-      ],
-      "js": ["content.js"],
-      "run_at": "document_idle"
-    }
   ]
 }
