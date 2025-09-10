@@ -118,11 +118,26 @@
   const jobHistory = $('#jobHistory');
 
   function stGet(keys) { return new Promise((resolve) => chrome.storage.local.get(keys, resolve)); }
+  function stGetSync(keys) { return new Promise((resolve) => { try { chrome.storage.sync.get(keys, resolve); } catch { resolve({}); } }); }
   function stSet(obj) { return new Promise((resolve) => chrome.storage.local.set(obj, resolve)); }
 
   async function loadItems() {
     const res = await stGet([STORAGE_KEY, SELECTED_KEY]);
-    const items = Array.isArray(res[STORAGE_KEY]) ? res[STORAGE_KEY] : [];
+    let items = Array.isArray(res[STORAGE_KEY]) ? res[STORAGE_KEY] : [];
+    // Fallback/migração: se local estiver vazio, tenta sync e migra
+    if (!items.length) {
+      try {
+        const syncRes = await stGetSync([STORAGE_KEY]);
+        const syncItems = Array.isArray(syncRes[STORAGE_KEY]) ? syncRes[STORAGE_KEY] : [];
+        if (syncItems.length) {
+          items = syncItems;
+          // migra para local para futuras aberturas
+          await stSet({ [STORAGE_KEY]: items });
+        }
+      } catch {}
+    }
+    // ordena por data (mais recente primeiro), se existir
+    try { items = items.slice().sort((a,b)=> new Date(b.createdAt||0) - new Date(a.createdAt||0)); } catch {}
     const selectedId = res[SELECTED_KEY] != null ? String(res[SELECTED_KEY]) : null;
     return { items, selectedId };
   }
@@ -372,32 +387,20 @@
     });
   }
 
-  if (btnDownloadCsv) {
-    btnDownloadCsv.addEventListener('click', async () => {
-      setStatus('Baixando CSV do StatusInvest...');
-      try {
-        chrome.runtime.sendMessage({ type: 'DOWNLOAD_STATUSINVEST_CSV' }, async (resp) => {
-          if (resp && resp.ok && resp.json && resp.json.ok) {
-            const name = resp.json.file || 'statusinvest.csv';
-            const csvText = resp.json.csv || '';
-            const item = { id: Date.now(), name, size: (csvText || '').length, type: 'text/csv', createdAt: new Date().toISOString(), content: csvText };
-            const { items } = await loadItems();
-            items.unshift(item);
-            await saveItems(items);
-            await setSelected(item.id);
-            await renderList();
-            setStatus(`Baixado e salvo: ${name}`);
-          } else {
-            setStatus(`Erro download: ${resp && resp.error ? resp.error : 'falha desconhecida'}`);
-          }
-        });
-      } catch (e) { setStatus(String(e)); }
-    });
-  }
+  // Nota: btnDownloadCsv foi substituído por btnDownloadAuto.
 
   // Primeira renderização
   renderList();
   renderJobHistory();
+
+  // Reage a mudanças no storage (ex.: outro popup salvou/limpou CSVs)
+  try {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if ((area === 'local' || area === 'sync') && changes && Object.prototype.hasOwnProperty.call(changes, STORAGE_KEY)) {
+        renderList();
+      }
+    });
+  } catch {}
 
   // Escuta progressos do background e restaura estado ao abrir
   try {
@@ -434,6 +437,7 @@
           setStatus(`(Em andamento) Processados: ${done}/${total} • OK: ${j.ok || 0} • Erros: ${j.fail || 0}`);
           setProgress(total, done);
           setProgressInfo(j);
+          startJobPolling();
         }
       });
     } catch {}
