@@ -1,0 +1,15 @@
+{
+  "name": "statusinvest-ext-api",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Vercel API for StatusInvest latest + Chrome MV3 extension",
+  "license": "UNLICENSED",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "pg": "^8.11.5"
+  }
+}
+
