@@ -6,7 +6,6 @@
 (function () {
   const FM_TH_KEY = 'fm';
   const I10_TH_KEY = 'i10';
-  const QTY10_TH_KEY = 'qty10';
   let ranksMap = null; // { TICKER: final_rank }
   let i10Map = null;   // { TICKER: i10_score }
 
@@ -64,8 +63,9 @@
     try { tr.querySelectorAll('th[data-key="tiket_m"]').forEach((n) => n.remove()); } catch {}
     const hasFm = !!tr.querySelector(`th[data-key="${FM_TH_KEY}"]`);
     const hasI10 = !!tr.querySelector(`th[data-key="${I10_TH_KEY}"]`);
-    const hasQty10 = !!tr.querySelector(`th[data-key="${QTY10_TH_KEY}"]`);
-    if (hasFm && hasI10 && hasQty10) return true;
+    // Remove previously injected Qty 10% header if present
+    try { tr.querySelectorAll('th[data-key="qty10"]').forEach((n) => n.remove()); } catch {}
+    if (hasFm && hasI10) return true;
 
     const actionsTh = tr.querySelector('th[data-key="assetId"]');
     const thFm = document.createElement('th');
@@ -80,21 +80,13 @@
     thI10.title = 'I10 Score';
     thI10.innerHTML = '<div><div>I10</div></div>';
 
-    const thQty10 = document.createElement('th');
-    thQty10.className = 'item text-right';
-    thQty10.dataset.key = QTY10_TH_KEY;
-    thQty10.title = 'Quantidade para 10%';
-    thQty10.innerHTML = '<div><div>Qtd p/ 10%</div></div>';
-
     if (actionsTh && actionsTh.parentElement === tr) {
       // Insert FM first, then I10, so headers align with row cells order
       tr.insertBefore(thFm, actionsTh);
       tr.insertBefore(thI10, actionsTh);
-      tr.insertBefore(thQty10, actionsTh);
     } else {
       tr.appendChild(thFm);
       tr.appendChild(thI10);
-      tr.appendChild(thQty10);
     }
     return true;
   }
@@ -104,8 +96,9 @@
     try { row.querySelectorAll('td[data-key="tiket_m"]').forEach((n) => n.remove()); } catch {}
     const hasFm = !!row.querySelector(`td[data-key="${FM_TH_KEY}"]`);
     const hasI10 = !!row.querySelector(`td[data-key="${I10_TH_KEY}"]`);
-    const hasQty10 = !!row.querySelector(`td[data-key="${QTY10_TH_KEY}"]`);
-    if (hasFm && hasI10 && hasQty10) return;
+    // Ensure any previously injected Qty 10% cell is removed
+    try { row.querySelectorAll('td[data-key="qty10"]').forEach((n) => n.remove()); } catch {}
+    if (hasFm && hasI10) return;
     const actionsTd = row.querySelector('td[data-key="assetId"]');
 
     if (!hasFm) {
@@ -124,23 +117,6 @@
       tdI10.style.padding = '6px 8px';
       if (actionsTd && actionsTd.parentElement === row) row.insertBefore(tdI10, actionsTd);
       else row.appendChild(tdI10);
-    }
-
-    if (!hasQty10) {
-      const tdQty = document.createElement('td');
-      tdQty.className = 'text-right';
-      tdQty.dataset.key = QTY10_TH_KEY;
-      tdQty.style.padding = '6px 8px';
-      // place immediately after i10 cell when possible
-      const i10CellHere = row.querySelector(`td[data-key="${I10_TH_KEY}"]`);
-      if (i10CellHere && i10CellHere.parentElement === row) {
-        const next = i10CellHere.nextSibling;
-        row.insertBefore(tdQty, next);
-      } else if (actionsTd && actionsTd.parentElement === row) {
-        row.insertBefore(tdQty, actionsTd);
-      } else {
-        row.appendChild(tdQty);
-      }
     }
   }
 
@@ -198,7 +174,6 @@
     const code = extractCodeFromRow(row);
     const fmCell = row.querySelector(`td[data-key="${FM_TH_KEY}"]`);
     const i10Cell = row.querySelector(`td[data-key="${I10_TH_KEY}"]`);
-    const qtyCell = row.querySelector(`td[data-key="${QTY10_TH_KEY}"]`);
     if (fmCell) {
       const rank = code && ranksMap ? ranksMap[code] : undefined;
       // reset styles first
@@ -228,48 +203,6 @@
       const score = code && i10Map ? i10Map[code] : undefined;
       i10Cell.textContent = score != null ? String(score) : '-';
       i10Cell.style.color = score != null ? '#1565c0' : '#9e9e9e';
-    }
-    if (qtyCell) {
-      // Default content
-      qtyCell.textContent = '—';
-      // Only compute if FM rank between 1 and 20
-      const rankFM = code && ranksMap ? ranksMap[code] : undefined;
-      if (Number.isFinite(rankFM) && rankFM >= 1 && rankFM <= 20) {
-        // Parse price and quantity
-        const priceTd = row.querySelector('td[data-key="price"]');
-        const qtyTd = row.querySelector('td[data-key="quantity"]');
-        let price = NaN;
-        if (priceTd) {
-          const t = priceTd.getAttribute('title');
-          price = Number(t);
-          if (!Number.isFinite(price)) price = parseMoneyBR(priceTd.textContent);
-        }
-        const qtyHeld = qtyTd ? (Number(qtyTd.getAttribute('title')) || parseIntBR(qtyTd.textContent)) : NaN;
-
-        if (Number.isFinite(price) && price > 0 && Number.isFinite(qtyHeld) && Number.isFinite(portfolioTotal) && portfolioTotal > 0) {
-          const currentAmount = price * qtyHeld;
-          const targetAmount = 0.10 * portfolioTotal;
-          const delta = targetAmount - currentAmount;
-          const qtyToBuy = Math.max(0, Math.floor(delta / price));
-          const aporte = qtyToBuy * price;
-
-          // Render with strong and small
-          qtyCell.innerHTML = '';
-          const st = document.createElement('strong');
-          st.textContent = String(qtyToBuy);
-          const sm = document.createElement('small');
-          sm.style.marginLeft = '6px';
-          try {
-            sm.textContent = `~ ${aporte.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}`;
-          } catch {
-            sm.textContent = `~ R$ ${aporte.toFixed(2)}`;
-          }
-          qtyCell.appendChild(st);
-          qtyCell.appendChild(sm);
-        } else {
-          qtyCell.textContent = '—';
-        }
-      }
     }
   }
 
@@ -527,6 +460,142 @@
       try { initEqualWeightPlanPanel(); } catch {}
     }
   }, 500);
+
+  // Listen for toolbar icon clicks (via bg message) to show a quick menu
+  try {
+    chrome.runtime.onMessage.addListener((msg) => {
+      if (msg && msg.type === 'SHOW_WELCOME_OVERLAY') {
+        showQuickMenuOverlay();
+      }
+    });
+  } catch {}
+
+  function showQuickMenuOverlay() {
+    const HOST_ID = 'si-quick-menu';
+    let host = document.getElementById(HOST_ID);
+    if (host) {
+      host.style.display = (host.style.display === 'none') ? 'block' : 'none';
+      return;
+    }
+
+    host = document.createElement('div');
+    host.id = HOST_ID;
+    host.style.position = 'fixed';
+    host.style.top = '12px';
+    host.style.right = '12px';
+    host.style.zIndex = '2147483647';
+    host.style.width = '360px';
+    host.style.maxHeight = '80vh';
+    host.style.borderRadius = '12px';
+    host.style.boxShadow = '0 16px 40px rgba(0,0,0,0.35)';
+    host.style.overflow = 'hidden';
+
+    const root = host.attachShadow({ mode: 'open' });
+    const wrap = document.createElement('div');
+    wrap.innerHTML = `
+      <style>
+        :host { all: initial; }
+        .panel { display:flex; flex-direction:column; background:#0f172a; color:#e5e7eb; border:1px solid #1f2937; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
+        .header { display:flex; align-items:center; justify-content:space-between; padding:10px 12px; background:#111827; border-bottom:1px solid #1f2937; }
+        .title { font-weight:700; font-size:14px; }
+        .actions { display:flex; align-items:center; gap:8px; }
+        .btn, .icon { border:1px solid #334155; background:#1f2937; color:#e5e7eb; border-radius:8px; padding:6px 10px; font-size:12px; cursor:pointer; }
+        .icon { width:28px; height:28px; display:flex; align-items:center; justify-content:center; padding:0; }
+        .body { padding:10px 12px; overflow:auto; max-height:60vh; }
+        .search { position:relative; margin-bottom:10px; }
+        .search input { width:100%; padding:10px 12px 10px 34px; border:1px solid #334155; background:#0b1220; color:#f3f4f6; border-radius:10px; font-size:13px; outline:none; }
+        .search .lens { position:absolute; top:50%; left:10px; transform:translateY(-50%); color:#94a3b8; font-size:14px; }
+        .filters { display:flex; gap:8px; margin-bottom:8px; }
+        .chip { display:inline-flex; align-items:center; gap:6px; border:1px solid #334155; background:#111827; color:#e5e7eb; border-radius:10px; padding:6px 8px; font-size:12px; }
+        .section-title { font-size:12px; color:#94a3b8; margin:10px 0 6px 2px; }
+        .card { background:#111827; border:1px solid #1f2937; border-radius:10px; padding:10px; margin-bottom:8px; display:flex; align-items:center; justify-content:space-between; }
+        .item { display:flex; align-items:center; gap:10px; }
+        .avatar { width:26px; height:26px; border-radius:6px; background:#0b1220; border:1px solid #334155; display:flex; align-items:center; justify-content:center; font-size:12px; color:#94a3b8; }
+        .name { font-weight:600; color:#f3f4f6; font-size:13px; }
+        .sub { font-size:12px; color:#9ca3af; }
+        .row-actions { display:flex; gap:6px; }
+        .small { font-size:12px; }
+        .footer { display:flex; align-items:center; justify-content:space-around; padding:8px; border-top:1px solid #1f2937; background:#0b1220; }
+        .tab { background:transparent; border:1px solid transparent; color:#9ca3af; padding:6px 8px; border-radius:8px; cursor:pointer; font-size:12px; }
+        .tab.active { color:#e5e7eb; background:#111827; border-color:#1f2937; }
+        .caret { position:absolute; top:-8px; right:18px; width:0; height:0; border-left:8px solid transparent; border-right:8px solid transparent; border-bottom:8px solid #111827; }
+      </style>
+      <div class="panel" part="panel">
+        <div class="caret"></div>
+        <div class="header">
+          <div class="title">Painel</div>
+          <div class="actions">
+            <button class="icon" id="closeBtn" title="Fechar">×</button>
+          </div>
+        </div>
+        <div class="body">
+          <div class="search">
+            <span class="lens">🔎</span>
+            <input id="searchInput" placeholder="Pesquisar" />
+          </div>
+          <div class="filters">
+            <div class="chip">Pasta</div>
+            <div class="chip">Tipo</div>
+          </div>
+          <div class="section">
+            <div class="section-title">Ações rápidas</div>
+            <div class="card">
+              <div class="item">
+                <div class="avatar">S</div>
+                <div>
+                  <div class="name">Mostrar oi</div>
+                  <div class="sub">Exibe uma saudação simples</div>
+                </div>
+              </div>
+              <div class="row-actions">
+                <button class="btn small" id="btnOi">Executar</button>
+              </div>
+            </div>
+            <div class="card">
+              <div class="item">
+                <div class="avatar">↻</div>
+                <div>
+                  <div class="name">Recarregar página</div>
+                  <div class="sub">Atualiza o conteúdo atual</div>
+                </div>
+              </div>
+              <div class="row-actions">
+                <button class="btn small" id="btnReload">Recarregar</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="footer">
+          <button class="tab active">Menu</button>
+          <button class="tab">Gerador</button>
+          <button class="tab">Enviar</button>
+          <button class="tab">Config</button>
+        </div>
+      </div>
+    `;
+
+    root.appendChild(wrap);
+
+    const $ = (sel) => root.querySelector(sel);
+    const closeBtn = $('#closeBtn');
+    const btnOi = $('#btnOi');
+    const btnReload = $('#btnReload');
+
+    if (closeBtn) closeBtn.addEventListener('click', () => { host.style.display = 'none'; });
+    if (btnOi) btnOi.addEventListener('click', () => { try { alert('Oi'); } catch {} });
+    if (btnReload) btnReload.addEventListener('click', () => { try { location.reload(); } catch {} });
+
+    // Close on outside click
+    const outside = (ev) => {
+      const path = ev.composedPath ? ev.composedPath() : [];
+      if (!path.includes(host)) host.style.display = 'none';
+    };
+    document.addEventListener('mousedown', outside);
+    // Close on ESC
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') host.style.display = 'none'; });
+
+    document.body.appendChild(host);
+  }
 })();
 
 // Floating Shadow DOM panel: Rebalance dates manager
@@ -834,6 +903,7 @@ function initEqualWeightPlanPanel() {
             <label title="Compra com base no orçamento, sem vender posições."><input type="radio" name="ewMode" value="investir" checked /> Investir</label>
             <label title="Ajusta quantidades para chegar ao alvo por ativo; só considera compras adicionais."><input type="radio" name="ewMode" value="rebalancear" /> Rebalancear</label>
           </span>
+          
           <button id="ewToggle" class="toggle-btn" type="button">Ocultar</button>
         </div>
       </div>
@@ -873,6 +943,7 @@ function initEqualWeightPlanPanel() {
   const MODE_KEY = 'ew_mode';
   function loadMode() { return new Promise((resolve) => { try { chrome.storage.sync.get([MODE_KEY], (r) => resolve(r?.[MODE_KEY] || 'investir')); } catch { resolve('investir'); } }); }
   function saveMode(v) { return new Promise((resolve) => { try { chrome.storage.sync.set({ [MODE_KEY]: v }, () => resolve()); } catch { resolve(); } }); }
+  
 
   // Utils (pt-BR parsing/formatting)
   function parseMoneyBR(text) {
@@ -1002,7 +1073,8 @@ function initEqualWeightPlanPanel() {
           const baseCents = Number.isFinite(row.currentAmount) ? Math.round(row.currentAmount * 100) : 0;
           const targetCents = Number.isFinite(row.targetPer) ? Math.round(row.targetPer * 100) : 0;
           const targetQty = priceCents > 0 ? Math.floor(targetCents / priceCents) : 0;
-          const deltaQty = Math.max(0, targetQty - (Number.isFinite(row.qty) ? row.qty : 0));
+          const baseQty = Number.isFinite(row.qty) ? row.qty : 0;
+          const deltaQty = Math.max(0, targetQty - baseQty);
           const deficitCents = Math.max(0, targetCents - baseCents);
           return { code: row.code, rank: row.rank, priceCents, baseCents, targetCents, targetQty, deltaQty, deficitCents, q: 0, spendCents: 0 };
         });

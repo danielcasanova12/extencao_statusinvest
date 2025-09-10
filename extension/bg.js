@@ -131,3 +131,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 });
+
+// When the user clicks the extension icon, ask the content script
+// in the active tab to show the welcome overlay.
+try {
+  chrome.action.onClicked.addListener((tab) => {
+    try {
+      if (tab && tab.id != null) {
+        chrome.tabs.sendMessage(tab.id, { type: 'SHOW_WELCOME_OVERLAY' });
+      }
+    } catch (err) {
+      console.warn('[bg] onClicked sendMessage error:', err);
+    }
+  });
+} catch {}
