@@ -2,7 +2,7 @@
 // - Recebe mensagens do content.js
 // - Faz fetch na API e retorna dados
 
-const DEFAULT_API_BASE = 'https://extencao-3vpksj95c-daniels-projects-b07af66f.vercel.app';
+const DEFAULT_API_BASE = 'https://extencao-k1unlzdlq-daniels-projects-b07af66f.vercel.app';
 
 function getApiBase() {
   return new Promise((resolve) => {
@@ -70,16 +70,101 @@ async function getApiToken() {
   });
 }
 
+// Abort Controllers (FM and INV10)
+let fmAbortController = null;
+let inv10AbortController = null;
+
 async function postFmCalcular(csvText) {
   const base = await getApiBase();
   const token = await getApiToken();
   const url = `${base.replace(/\/$/, '')}/api/formulamagica/calcular`;
   const headers = { 'Content-Type': 'application/json' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
-  const resp = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ csv: csvText }) });
+  const resp = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ csv: csvText }), signal: fmAbortController ? fmAbortController.signal : undefined });
   const json = await resp.json().catch(() => ({}));
   if (!resp.ok) throw new Error(json?.error || `HTTP ${resp.status}`);
   return json;
+}
+async function postInv10Scrape(tickers, opts = {}) {
+  const base = await getApiBase();
+  const token = await getApiToken();
+  const url = `${base.replace(/\/$/, '')}/api/inv10/scrape`;
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const payload = {
+    tickers: Array.isArray(tickers) ? tickers : [],
+    append: Boolean(opts.append),
+    truncate: Boolean(opts.truncate),
+  };
+  const resp = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload), signal: opts.signal });
+  const json = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(json?.error || `HTTP ${resp.status}`);
+  return json;
+}
+
+// ----------------------
+// Investidor10 job runner (persist progress across popup restarts)
+// ----------------------
+const INV10_JOB_KEY = 'INV10_JOB';
+let inv10RunnerActive = false;
+
+function getJob() {
+  return new Promise((resolve) => {
+    try { chrome.storage.local.get([INV10_JOB_KEY], (res) => resolve(res?.[INV10_JOB_KEY] || null)); }
+    catch { resolve(null); }
+  });
+}
+function setJob(job) {
+  return new Promise((resolve) => {
+    try { chrome.storage.local.set({ [INV10_JOB_KEY]: job }, () => resolve()); }
+    catch { resolve(); }
+  });
+}
+function broadcastProgress(job) { try { chrome.runtime.sendMessage({ type: 'INV10_PROGRESS', job }); } catch {} }
+function broadcastDone(job) { try { chrome.runtime.sendMessage({ type: 'INV10_DONE', job }); } catch {} }
+
+async function runInv10Job() {
+  if (inv10RunnerActive) return;
+  inv10RunnerActive = true;
+  try {
+    let job = await getJob();
+    if (!job || !job.running || !Array.isArray(job.tickers)) { inv10RunnerActive = false; return; }
+    if (!job.startedAt) { job.startedAt = new Date().toISOString(); await setJob(job); }
+
+    // 1) Truncate once
+    if (!job.truncated) {
+      try { await postInv10Scrape([], { truncate: true }); job.truncated = true; }
+      catch (e) { job.error = String(e?.message || e); await setJob(job); broadcastProgress(job); inv10RunnerActive = false; return; }
+      await setJob(job); broadcastProgress(job);
+    }
+
+    // 2) Iterate remaining tickers
+    const total = job.tickers.length;
+    for (let i = job.index || 0; i < total; i++) {
+      job.current = job.tickers[i];
+      job.index = i;
+      job.lastUpdate = new Date().toISOString();
+      await setJob(job); broadcastProgress(job);
+      if (job.cancel) { job.running = false; job.finishedAt = new Date().toISOString(); await setJob(job); broadcastDone(job); inv10RunnerActive = false; return; }
+      try {
+        // Abort support per-request
+        try { if (inv10AbortController) inv10AbortController.abort(); } catch {}
+        inv10AbortController = new AbortController();
+        const resp = await postInv10Scrape([job.current], { append: true, signal: inv10AbortController.signal });
+        const ins = Number(resp?.inserted || 0);
+        job.inserted = Number(job.inserted || 0) + ins;
+        job.ok = Number(job.ok || 0) + 1;
+      } catch (e) {
+        if (e && (e.name === 'AbortError' || /aborted/i.test(String(e)))) { job.cancel = true; break; }
+        job.fail = Number(job.fail || 0) + 1;
+        job.lastError = String(e?.message || e);
+      }
+      await new Promise((r) => setTimeout(r, 250));
+      await setJob(job); broadcastProgress(job);
+    }
+    job.running = false; job.finishedAt = new Date().toISOString();
+    await setJob(job); broadcastDone(job);
+  } finally { inv10RunnerActive = false; }
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -152,13 +237,73 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === 'FM_CALCULAR') {
     (async () => {
       try {
+        if (fmAbortController) try { fmAbortController.abort(); } catch {}
+        fmAbortController = new AbortController();
         const json = await postFmCalcular(String(message.csv || ''));
         sendResponse({ ok: true, json });
       } catch (err) {
         console.error('[bg] FM_CALCULAR error:', err);
         sendResponse({ ok: false, error: String(err?.message || err) });
+      } finally { fmAbortController = null; }
+    })();
+    return true;
+  }
+  if (message.type === 'INV10_SCRAPE') {
+    (async () => {
+      try {
+        const tickers = Array.isArray(message.tickers) ? message.tickers : [];
+        inv10AbortController = inv10AbortController || new AbortController();
+        const json = await postInv10Scrape(tickers, { append: message.append, truncate: message.truncate, signal: inv10AbortController.signal });
+        sendResponse({ ok: true, json });
+      } catch (err) {
+        console.error('[bg] INV10_SCRAPE error:', err);
+        sendResponse({ ok: false, error: String(err?.message || err) });
       }
     })();
+    return true;
+  }
+
+  if (message.type === 'INV10_START') {
+    (async () => {
+      try {
+        const tickers = (Array.isArray(message.tickers) ? message.tickers : []).map((t) => String(t || '').toUpperCase());
+        if (!tickers.length) { sendResponse({ ok: false, error: 'tickers vazios' }); return; }
+        const existing = await getJob();
+        if (existing && existing.running) { sendResponse({ ok: true, job: existing }); return; }
+        const job = { running: true, tickers, index: 0, ok: 0, fail: 0, inserted: 0, truncated: false, startedAt: new Date().toISOString(), lastUpdate: new Date().toISOString() };
+        await setJob(job);
+        broadcastProgress(job);
+        runInv10Job();
+        sendResponse({ ok: true, job });
+      } catch (err) {
+        sendResponse({ ok: false, error: String(err?.message || err) });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === 'INV10_GET_JOB') {
+    (async () => {
+      const job = await getJob();
+      if (job && job.running && !inv10RunnerActive) runInv10Job();
+      sendResponse({ ok: true, job });
+    })();
+    return true;
+  }
+
+  if (message.type === 'INV10_CANCEL') {
+    (async () => {
+      const job = await getJob();
+      if (job && job.running) { job.cancel = true; await setJob(job); broadcastProgress(job); }
+      try { if (inv10AbortController) inv10AbortController.abort(); } catch {}
+      sendResponse({ ok: true });
+    })();
+    return true;
+  }
+
+  if (message.type === 'FM_CANCEL') {
+    try { if (fmAbortController) fmAbortController.abort(); } catch {}
+    sendResponse({ ok: true });
     return true;
   }
 });

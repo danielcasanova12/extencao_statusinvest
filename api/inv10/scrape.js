@@ -1,0 +1,172 @@
+// Vercel Serverless Function: POST /api/inv10/scrape
+// - Input JSON: { tickers: ["petr4","wege3", ...] }
+// - Scrapes https://investidor10.com.br/acoes/<ticker>/
+// - Extracts checklist inputs (.checklist-item input.styled-checkbox)
+// - Builds JSON per ticker and persists to tb_inv10
+// - Pode truncar tb_inv10 (truncate=true) ou fazer append (append=true)
+
+let pool;
+const cheerio = require('cheerio');
+
+function setCors(_req, res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  res.setHeader('Access-Control-Max-Age', '86400');
+}
+
+async function getPool() {
+  if (pool) return pool;
+  const { Pool } = require('pg');
+  const connStr = process.env.DATABASE_URL;
+  if (!connStr) throw new Error('Missing env: DATABASE_URL');
+  const needsSSL = !/localhost|127\.0\.0\.1/i.test(connStr);
+  pool = new Pool({ connectionString: connStr, ssl: needsSSL ? { rejectUnauthorized: false } : false });
+  return pool;
+}
+
+function isAuthorized(req) {
+  const token = process.env.API_TOKEN || process.env.FM_API_TOKEN || process.env.SECRET_TOKEN;
+  if (!token) return true;
+  const hdr = String(req.headers['authorization'] || req.headers['Authorization'] || '').trim();
+  if (!hdr.toLowerCase().startsWith('bearer ')) return false;
+  const provided = hdr.slice(7).trim();
+  return provided && provided === token;
+}
+
+async function ensureTable(db) {
+  const sql = [
+    'CREATE TABLE IF NOT EXISTS tb_inv10 (',
+    '  id          SERIAL PRIMARY KEY,',
+    '  acao        TEXT,',
+    '  ticker      TEXT,',
+    '  url         TEXT,',
+    '  scraped_at  TIMESTAMPTZ,',
+    '  checks      JSONB,',
+    '  true_count  INTEGER',
+    ');'
+  ].join('\n');
+  await db.query(sql);
+  try { await db.query('CREATE INDEX IF NOT EXISTS idx_tb_inv10_ticker ON tb_inv10 (UPPER(ticker))'); } catch {}
+}
+
+async function truncateTable(db) {
+  await db.query('TRUNCATE TABLE tb_inv10');
+}
+
+async function insertRows(db, items) {
+  if (!items.length) return 0;
+  const batch = 500;
+  let total = 0;
+  for (let i = 0; i < items.length; i += batch) {
+    const slice = items.slice(i, i + batch);
+    const params = [];
+    const values = slice.map((r, idx) => {
+      const p1 = `$${idx * 6 + 1}`; // acao
+      const p2 = `$${idx * 6 + 2}`; // ticker
+      const p3 = `$${idx * 6 + 3}`; // url
+      const p4 = `$${idx * 6 + 4}`; // scraped_at
+      const p5 = `$${idx * 6 + 5}::jsonb`; // checks
+      const p6 = `$${idx * 6 + 6}`; // true_count
+      params.push(r.acao, r.ticker, r.url, r.scraped_at, JSON.stringify(r.checks), r.trueCount);
+      return `(${p1},${p2},${p3},${p4},${p5},${p6})`;
+    });
+    const sql = 'INSERT INTO tb_inv10 (acao,ticker,url,scraped_at,checks,true_count) VALUES ' + values.join(',');
+    await db.query(sql, params);
+    total += slice.length;
+  }
+  return total;
+}
+
+function toTicker(s) { return (s || '').toString().trim().toUpperCase(); }
+
+async function scrapeOne(tkr) {
+  const ticker = toTicker(tkr);
+  const lower = ticker.toLowerCase();
+  const url = `https://investidor10.com.br/acoes/${encodeURIComponent(lower)}/`;
+  const html = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Bot/1.0)' } }).then(r => r.text());
+  const $ = cheerio.load(html);
+
+  let acao = ($('h1').first().text() || '').trim();
+  if (!acao) acao = ticker;
+
+  const checks = {};
+  let trueCount = 0;
+  // Preferir .checklist-item, mas aceitar qualquer input.styled-checkbox na página
+  const inputs = $('.checklist-item input.styled-checkbox').toArray();
+  const fallbacks = inputs.length ? [] : $('input.styled-checkbox').toArray();
+  const nodes = inputs.length ? inputs : fallbacks;
+  for (const el of nodes) {
+    const id = $(el).attr('id') || $(el).attr('name') || '';
+    if (!id) continue;
+    const checked = $(el).is(':checked') || $(el).attr('checked') != null;
+    checks[id] = { checked };
+    if (checked) trueCount += 1;
+  }
+
+  const item = {
+    acao,
+    ticker,
+    url,
+    scraped_at: new Date().toISOString(),
+    checks,
+    trueCount,
+  };
+  return item;
+}
+
+export default async function handler(req, res) {
+  setCors(req, res);
+  if (req.method === 'OPTIONS') return res.status(204).end();
+  if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'Method Not Allowed' });
+  if (!isAuthorized(req)) return res.status(401).json({ ok: false, error: 'Unauthorized' });
+
+  try {
+    // Parse body
+    let body = req.body;
+    const ct = String(req.headers['content-type'] || '').toLowerCase();
+    if (!body || ct.includes('application/json')) {
+      body = body || await new Promise((resolve) => {
+        let data = '';
+        try {
+          req.on('data', (ch) => { data += ch; });
+          req.on('end', () => { try { resolve(JSON.parse(data || '{}')); } catch { resolve({}); } });
+        } catch { resolve({}); }
+      });
+    }
+    let tickers = Array.isArray(body?.tickers) ? body.tickers : [];
+    const truncate = Boolean(body?.truncate);
+    const append = Boolean(body?.append);
+    if (!tickers.length) tickers = (String(body?.ticker || '') ? [String(body.ticker)] : []);
+    // Permite chamada somente para truncar, sem tickers
+    if (!tickers.length && truncate) {
+      const db = await getPool();
+      await ensureTable(db);
+      await truncateTable(db);
+      return res.status(200).json({ status: 'ok', tickers_processados: 0, inserted: 0, timestamp: new Date().toISOString(), truncated: true, append });
+    }
+    if (!tickers.length) return res.status(400).json({ ok: false, error: 'tickers vazios' });
+
+    // Scrape sequencial (estável e respeita o site)
+    const results = [];
+    for (const t of tickers) {
+      try { results.push(await scrapeOne(t)); }
+      catch (e) { results.push({ ticker: toTicker(t), url: `https://investidor10.com.br/acoes/${String(t).toLowerCase()}/`, error: String(e && (e.message || e)) }); }
+      await new Promise((r) => setTimeout(r, 250)); // pequena pausa entre requisições
+    }
+
+    // Persistir
+    const db = await getPool();
+    await ensureTable(db);
+    if (truncate) { await truncateTable(db); }
+    // Apenas itens válidos (que tenham checks mapeados)
+    const valid = results.filter((x) => x && x.ticker && x.checks && typeof x.trueCount === 'number');
+    const inserted = await insertRows(db, valid);
+
+    const ts = new Date().toISOString();
+    return res.status(200).json({ status: 'ok', tickers_processados: results.length, inserted, timestamp: ts, truncated: truncate, append: append, data: results });
+  } catch (err) {
+    console.error('[inv10/scrape] error:', err);
+    return res.status(500).json({ ok: false, error: String(err && (err.message || err)) });
+  }
+}

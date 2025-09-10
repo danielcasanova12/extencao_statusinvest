@@ -28,6 +28,8 @@
   const csvInput = $('#csvInput');
   const btnUpload = $('#btnUpload');
   const btnExecutar = $('#btnExecutar');
+  const btnCancelar = $('#btnCancelar');
+  const execTipo = $('#execucaoTipo');
   const fileName = $('#fileName');
   const statusArea = $('#statusArea');
 
@@ -50,20 +52,7 @@
     });
   }
 
-  if (btnUpload) {
-    btnUpload.addEventListener('click', () => {
-      const file = csvInput && csvInput.files && csvInput.files[0];
-      console.log('[popup] Upload clicado.', file ? `Arquivo: ${file.name}` : 'Nenhum arquivo.');
-      setStatus(file ? `Upload clicado: ${file.name}` : 'Nenhum arquivo selecionado');
-    });
-  }
-
-  if (btnExecutar) {
-    btnExecutar.addEventListener('click', () => {
-      console.log('[popup] Executar clicado.');
-      setStatus('Executar clicado');
-    });
-  }
+  // (handlers antigos removidos; handlers reais mais abaixo)
 
   // Persistência e lista de itens salvos
   const STORAGE_KEY = 'csv_items';
@@ -187,11 +176,72 @@
   }
 
   // Executar usa item selecionado (no-op)
+  function norm(s){return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]/g,'');}
+  function pickDelimiter(first){const c=(first||'').split(',').length; const s=(first||'').split(';').length; return s>c?';':',';}
+  function splitCSVLine(line, d){const out=[];let cur='';let q=false;for(let i=0;i<line.length;i++){const ch=line[i];if(ch==='"'){if(q&&line[i+1]==='"'){cur+='"';i++;} else q=!q;} else if(ch===d && !q){out.push(cur);cur='';} else{cur+=ch;}} out.push(cur);return out;}
+  function extractTickersFromCsv(text){
+    try{
+      const lines=(text||'').split(/\r?\n/).filter(l=>l.trim().length); if(!lines.length) return [];
+      const d=pickDelimiter(lines[0]);
+      const headers=splitCSVLine(lines[0],d).map(h=>h.trim());
+      const map=new Map(headers.map(h=>[norm(h),h]));
+      const pick=(...c)=>{for(const cand of c){const k=norm(cand); if(map.has(k)) return map.get(k);} for(const cand of c){const k=norm(cand); const f=headers.find(h=>norm(h).includes(k)); if(f) return f;} return null;};
+      const col=pick('ticker','code','papel','symbol','ativo','tkr'); if(!col) return [];
+      const idx=headers.indexOf(col); if(idx<0) return [];
+      const out=new Set();
+      for(let i=1;i<lines.length;i++){const vals=splitCSVLine(lines[i],d); const v=(vals[idx]||'').trim(); if(v) out.add(v.toUpperCase());}
+      return Array.from(out);
+    }catch{return []}
+  }
+
   if (btnExecutar) {
     btnExecutar.addEventListener('click', async () => {
       const { items, selectedId } = await loadItems();
       const sel = items.find((x) => String(x.id) === String(selectedId));
       if (!sel) { setStatus('Selecione um item salvo para executar.'); return; }
+
+      const tipo = execTipo ? execTipo.value : 'formulamagica';
+      if (tipo === 'inv10') {
+        if (!sel.content) { setStatus('Item sem conteúdo. Faça o upload novamente.'); return; }
+        const tickers = extractTickersFromCsv(sel.content);
+        if (!tickers.length) { setStatus('Não foi possível extrair tickers do CSV.'); return; }
+        setStatus(`Iniciando raspagem de ${tickers.length} tickers...`);
+        try {
+          chrome.runtime.sendMessage({ type: 'INV10_START', tickers }, (resp) => {
+            if (resp && resp.ok) { setStatus('Raspagem iniciada...'); }
+            else { setStatus(`Erro ao iniciar: ${resp && resp.error ? resp.error : 'falha desconhecida'}`); }
+          });
+        } catch (e) { setStatus(String(e)); }
+        return;
+      }
+
+      if (tipo === 'todos') {
+        if (!sel.content) { setStatus('Item sem conteúdo. Faça o upload novamente.'); return; }
+        setStatus('Executando Fórmula Mágica...');
+        try {
+          chrome.runtime.sendMessage({ type: 'FM_CALCULAR', csv: sel.content }, (resp) => {
+            if (resp && resp.ok) {
+              const p = resp.json && (resp.json.processed || 0);
+              const diag = resp.json && resp.json.diag;
+              const extra = diag ? ` | lidas: ${diag.parsed_rows}, após filtros: ${diag.after_compute}` : '';
+              setStatus(`FM ok. Inseridos: ${p}${extra}. Iniciando Investidor10...`);
+              const tickers = extractTickersFromCsv(sel.content);
+              if (!tickers.length) { setStatus('FM ok. Não foi possível extrair tickers para o Investidor10.'); return; }
+              try {
+                chrome.runtime.sendMessage({ type: 'INV10_START', tickers }, (r2) => {
+                  if (r2 && r2.ok) setStatus('INV10 iniciado...');
+                  else setStatus(`INV10 erro ao iniciar: ${r2 && r2.error ? r2.error : 'falha desconhecida'}`);
+                });
+              } catch (e2) { setStatus(String(e2)); }
+            } else {
+              setStatus(`Erro na Fórmula Mágica: ${resp && resp.error ? resp.error : 'falha desconhecida'}`);
+            }
+          });
+        } catch (e) { setStatus(String(e)); }
+        return;
+      }
+
+      // Default: Fórmula Mágica
       if (!sel.content) { setStatus('Item sem conteúdo. Faça o upload novamente.'); return; }
       setStatus('Enviando para cálculo...');
       try {
@@ -211,6 +261,44 @@
     });
   }
 
+  if (btnCancelar) {
+    btnCancelar.addEventListener('click', () => {
+      try { chrome.runtime.sendMessage({ type: 'INV10_CANCEL' }, () => {}); } catch {}
+      try { chrome.runtime.sendMessage({ type: 'FM_CANCEL' }, () => {}); } catch {}
+      setStatus('Cancelando...');
+    });
+  }
+
   // Primeira renderização
   renderList();
+
+  // Escuta progressos do background e restaura estado ao abrir
+  try {
+    chrome.runtime.onMessage.addListener((msg) => {
+      if (!msg || !msg.type) return;
+      if (msg.type === 'INV10_PROGRESS') {
+        const j = msg.job || {};
+        const total = (j.tickers || []).length;
+        const done = (j.ok || 0) + (j.fail || 0);
+        setStatus(`Processados: ${done}/${total} • OK: ${j.ok || 0} • Erros: ${j.fail || 0}${j.error ? ' • Erro: ' + j.error : ''}`);
+      }
+      if (msg.type === 'INV10_DONE') {
+        const j = msg.job || {};
+        setStatus(`INV10 concluído. Inseridos: ${j.inserted || 0} • OK: ${j.ok || 0} • Erros: ${j.fail || 0}`);
+      }
+    });
+  } catch {}
+
+  (async () => {
+    try {
+      chrome.runtime.sendMessage({ type: 'INV10_GET_JOB' }, (resp) => {
+        const j = resp && resp.ok ? (resp.job || null) : null;
+        if (j && j.running) {
+          const total = (j.tickers || []).length;
+          const done = (j.ok || 0) + (j.fail || 0);
+          setStatus(`(Em andamento) Processados: ${done}/${total} • OK: ${j.ok || 0} • Erros: ${j.fail || 0}`);
+        }
+      });
+    } catch {}
+  })();
 })();
