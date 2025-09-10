@@ -10,9 +10,20 @@
     "service_worker": "bg.js"
   },
   "permissions": [
-    "storage"
+    "storage",
+    "tabs",
+    "downloads"
   ],
   "host_permissions": [
     "https://*.vercel.app/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://statusinvest.com.br/acoes/busca-avancada*"
+      ],
+      "js": ["cs-si-download.js"],
+      "run_at": "document_idle"
+    }
   ]
 }

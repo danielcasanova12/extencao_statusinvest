@@ -24,22 +24,79 @@
     try { chrome.runtime.openOptionsPage && chrome.runtime.openOptionsPage(); } catch {}
   });
 
-  // CSV upload UI (no-op handlers for now)
-  const csvInput = $('#csvInput');
-  const btnUpload = $('#btnUpload');
+  // CSV upload UI (reorganizado)
+  const fileInput = $('#fileInput');
+  const btnUploadFile = $('#btnUploadFile');
   const btnExecutar = $('#btnExecutar');
   const btnCancelar = $('#btnCancelar');
+  const btnDownloadAuto = $('#btnDownloadAuto');
   const execTipo = $('#execucaoTipo');
   const fileName = $('#fileName');
   const statusArea = $('#statusArea');
+  
+  // Progress UI
+  const progress = $('#progress');
+  const progressBar = $('#progressBar');
+  const progressText = $('#progressText');
+  const progressInfo = $('#progressInfo');
+  let jobPollIv = null;
+  function setProgress(total, done) {
+    if (!progress || !progressBar || !progressText) return;
+    total = Number(total || 0); done = Number(done || 0);
+    const pct = total > 0 ? Math.max(0, Math.min(100, Math.round((done / total) * 100))) : 0;
+    progress.style.display = total > 0 ? 'block' : 'none';
+    progress.setAttribute('aria-hidden', total > 0 ? 'false' : 'true');
+    progressBar.style.width = pct + '%';
+    progressText.textContent = total > 0 ? (`Progresso: ${pct}% (${done}/${total})`) : '';
+  }
+  function setProgressInfo(job) {
+    if (!progressInfo) return;
+    if (!job || !job.running) { progressInfo.textContent = ''; return; }
+    const stage = job.stage || 'processing';
+    const current = job.current || '';
+    const start = job.startedAt ? new Date(job.startedAt) : null;
+    const total = Array.isArray(job.tickers) ? job.tickers.length : 0;
+    const done = (Number(job.ok || 0) + Number(job.fail || 0));
+    let etaTxt = '';
+    try {
+      if (start && total > 0 && done > 0) {
+        const elapsed = (Date.now() - start.getTime()) / 1000; // s
+        const rate = elapsed / done;
+        const remain = Math.max(0, Math.round(rate * (total - done)));
+        const mm = String(Math.floor(remain / 60)).padStart(2, '0');
+        const ss = String(remain % 60).padStart(2, '0');
+        etaTxt = ` • ETA: ~${mm}:${ss}`;
+      }
+    } catch {}
+    progressInfo.textContent = `Etapa: ${stage}${current ? ' • Ticker: ' + current : ''}${etaTxt}`;
+  }
+
+  function stopJobPolling() {
+    if (jobPollIv) { try { clearInterval(jobPollIv); } catch {} jobPollIv = null; }
+  }
+  function startJobPolling() {
+    stopJobPolling();
+    jobPollIv = setInterval(() => {
+      try {
+        chrome.runtime.sendMessage({ type: 'INV10_GET_JOB' }, (resp) => {
+          const j = resp && resp.ok ? (resp.job || null) : null;
+          if (!j || !j.running) { stopJobPolling(); return; }
+          const total = (j.tickers || []).length || Number(j.total || 0);
+          const done = (Number(j.ok || 0) + Number(j.fail || 0));
+          setProgress(total, done);
+          setProgressInfo(j);
+        });
+      } catch {}
+    }, 1000);
+  }
 
   function setStatus(text) { if (statusArea) statusArea.textContent = text; }
   function setFileName(text) { if (fileName) fileName.textContent = text; }
-  function setUploadEnabled(enabled) { if (btnUpload) btnUpload.disabled = !enabled; }
+  function setUploadEnabled(enabled) { if (btnUploadFile) btnUploadFile.disabled = !enabled; }
 
-  if (csvInput) {
-    csvInput.addEventListener('change', () => {
-      const file = csvInput.files && csvInput.files[0];
+  if (fileInput) {
+    fileInput.addEventListener('change', () => {
+      const file = fileInput.files && fileInput.files[0];
       if (file) {
         setFileName(`Arquivo selecionado: ${file.name}`);
         setStatus('Arquivo pronto para upload');
@@ -58,6 +115,7 @@
   const STORAGE_KEY = 'csv_items';
   const SELECTED_KEY = 'csv_selected_id';
   const savedList = $('#savedList');
+  const jobHistory = $('#jobHistory');
 
   function stGet(keys) { return new Promise((resolve) => chrome.storage.local.get(keys, resolve)); }
   function stSet(obj) { return new Promise((resolve) => chrome.storage.local.set(obj, resolve)); }
@@ -121,6 +179,34 @@
     }
   }
 
+  async function renderJobHistory() {
+    if (!jobHistory) return;
+    try {
+      const resp = await new Promise((resolve)=>{ try { chrome.runtime.sendMessage({ type: 'INV10_GET_HISTORY' }, (r)=> resolve(r)); } catch { resolve(null); } });
+      const hist = (resp && resp.ok && Array.isArray(resp.history)) ? resp.history : [];
+      jobHistory.innerHTML = '';
+      if (!hist.length) { const empty = document.createElement('div'); empty.className = 'sub'; empty.textContent = 'Sem histórico ainda.'; jobHistory.appendChild(empty); return; }
+      hist.forEach((h)=>{
+        const total = Number(h.total || 0);
+        const ok = Number(h.ok || 0);
+        const fail = Number(h.fail || 0);
+        const done = ok + fail;
+        const pct = total > 0 ? Math.round((done/total)*100) : 0;
+        const st = (h.stage || (h.canceled ? 'canceled' : 'done'));
+        const li = document.createElement('div');
+        li.className = 'list-item';
+        li.innerHTML = `<div class="list-main">
+            <div>
+              <div class="list-name">${st === 'done' ? 'Concluído' : (st === 'canceled' ? 'Cancelado' : st)}</div>
+              <div class="list-meta">${ok} OK • ${fail} Erros • ${total} Total • ${pct}%</div>
+            </div>
+          </div>
+          <div class="list-actions"></div>`;
+        jobHistory.appendChild(li);
+      });
+    } catch {}
+  }
+
   if (savedList) {
     savedList.addEventListener('click', async (ev) => {
       const target = ev.target;
@@ -146,9 +232,9 @@
   }
 
   // Integração do Upload com a lista (salva metadados no storage)
-  if (btnUpload) {
-    btnUpload.addEventListener('click', async () => {
-      const file = csvInput && csvInput.files && csvInput.files[0];
+  if (btnUploadFile) {
+    btnUploadFile.addEventListener('click', async () => {
+      const file = fileInput && fileInput.files && fileInput.files[0];
       if (!file) { setStatus('Nenhum arquivo selecionado'); return; }
       setStatus('Lendo arquivo...');
       try {
@@ -164,7 +250,7 @@
         await saveItems(items);
         await setSelected(item.id);
         setStatus(`Arquivo salvo: ${file.name}`);
-        if (csvInput) csvInput.value = '';
+        if (fileInput) fileInput.value = '';
         setUploadEnabled(false);
         setFileName('');
         await renderList();
@@ -206,10 +292,27 @@
         const tickers = extractTickersFromCsv(sel.content);
         if (!tickers.length) { setStatus('Não foi possível extrair tickers do CSV.'); return; }
         setStatus(`Iniciando raspagem de ${tickers.length} tickers...`);
+        setProgress(tickers.length, 0);
+        setProgressInfo({ running: true, stage: 'init', total: tickers.length, ok: 0, fail: 0, startedAt: new Date().toISOString() });
         try {
           chrome.runtime.sendMessage({ type: 'INV10_START', tickers }, (resp) => {
-            if (resp && resp.ok) { setStatus('Raspagem iniciada...'); }
+            if (resp && resp.ok) { setStatus('Raspagem iniciada...'); startJobPolling(); }
             else { setStatus(`Erro ao iniciar: ${resp && resp.error ? resp.error : 'falha desconhecida'}`); }
+          });
+        } catch (e) { setStatus(String(e)); }
+        return;
+      }
+
+      if (tipo === 'inv10fm') {
+        setStatus('Gerando ranking com base no Investidor10 (≥6)...');
+        try {
+          chrome.runtime.sendMessage({ type: 'FM_FROM_INV10', min_true: 6 }, (resp) => {
+            if (resp && resp.ok) {
+              const p = resp.json && (resp.json.processed || 0);
+              setStatus('Ranking Inv10+FM concluído. Registros: ' + p);
+            } else {
+              setStatus('Erro Inv10+FM');
+            }
           });
         } catch (e) { setStatus(String(e)); }
         return;
@@ -269,8 +372,32 @@
     });
   }
 
+  if (btnDownloadCsv) {
+    btnDownloadCsv.addEventListener('click', async () => {
+      setStatus('Baixando CSV do StatusInvest...');
+      try {
+        chrome.runtime.sendMessage({ type: 'DOWNLOAD_STATUSINVEST_CSV' }, async (resp) => {
+          if (resp && resp.ok && resp.json && resp.json.ok) {
+            const name = resp.json.file || 'statusinvest.csv';
+            const csvText = resp.json.csv || '';
+            const item = { id: Date.now(), name, size: (csvText || '').length, type: 'text/csv', createdAt: new Date().toISOString(), content: csvText };
+            const { items } = await loadItems();
+            items.unshift(item);
+            await saveItems(items);
+            await setSelected(item.id);
+            await renderList();
+            setStatus(`Baixado e salvo: ${name}`);
+          } else {
+            setStatus(`Erro download: ${resp && resp.error ? resp.error : 'falha desconhecida'}`);
+          }
+        });
+      } catch (e) { setStatus(String(e)); }
+    });
+  }
+
   // Primeira renderização
   renderList();
+  renderJobHistory();
 
   // Escuta progressos do background e restaura estado ao abrir
   try {
@@ -281,10 +408,18 @@
         const total = (j.tickers || []).length;
         const done = (j.ok || 0) + (j.fail || 0);
         setStatus(`Processados: ${done}/${total} • OK: ${j.ok || 0} • Erros: ${j.fail || 0}${j.error ? ' • Erro: ' + j.error : ''}`);
+        setProgress(total, done);
+        setProgressInfo(j);
       }
       if (msg.type === 'INV10_DONE') {
         const j = msg.job || {};
         setStatus(`INV10 concluído. Inseridos: ${j.inserted || 0} • OK: ${j.ok || 0} • Erros: ${j.fail || 0}`);
+        const total = (j.tickers || []).length;
+        setProgress(total, total);
+        setProgressInfo(null);
+        stopJobPolling();
+        // Atualiza histórico
+        renderJobHistory();
       }
     });
   } catch {}
@@ -297,6 +432,8 @@
           const total = (j.tickers || []).length;
           const done = (j.ok || 0) + (j.fail || 0);
           setStatus(`(Em andamento) Processados: ${done}/${total} • OK: ${j.ok || 0} • Erros: ${j.fail || 0}`);
+          setProgress(total, done);
+          setProgressInfo(j);
         }
       });
     } catch {}

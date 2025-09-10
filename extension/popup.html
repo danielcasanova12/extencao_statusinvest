@@ -41,6 +41,11 @@
       .list-meta { font-size:11px; color:#9ca3af; }
       .list-actions { display:flex; gap:6px; }
       .icon-btn { border:1px solid #334155; background:#1f2937; color:#e5e7eb; border-radius:8px; width:28px; height:28px; display:flex; align-items:center; justify-content:center; cursor:pointer; }
+      /* Progress */
+      .progress { display:none; height:8px; background:#111827; border:1px solid #334155; border-radius:8px; overflow:hidden; margin-top:6px; }
+      .progress .bar { height:100%; width:0%; background:#10b981; transition: width .2s ease; }
+      .progress-text { font-size:12px; color:#94a3b8; margin-top:4px; }
+      .progress-info { font-size:12px; color:#cbd5e1; margin-top:2px; }
     </style>
   </head>
   <body>
@@ -66,26 +71,45 @@
 
         <div class="section" id="csvSection">
           <div class="section-title">Importar CSV</div>
-          <label for="csvInput">Selecione um arquivo CSV</label>
-          <input type="file" id="csvInput" accept=".csv" />
+          <!-- 1) Abrir e ir ao download -->
+          <div class="row">
+            <button class="btn" id="btnDownloadAuto">Abrir página e ir ao Download</button>
+          </div>
+          <!-- 2) Escolher arquivo -->
+          <label for="fileInput" style="margin-top:8px;">Selecione um arquivo CSV</label>
+          <input type="file" id="fileInput" accept=".csv" />
+          <!-- 3) Upload do arquivo escolhido -->
+          <div class="row" style="margin-top:8px;">
+            <button class="btn" id="btnUploadFile" disabled>Upload</button>
+          </div>
           <div id="fileName" class="sub" style="margin-top:6px;"></div>
           <div class="row">
             <label for="execucaoTipo">Tipo de Execução:</label>
             <select id="execucaoTipo">
               <option value="formulamagica">Fórmula Mágica</option>
               <option value="inv10">Investidor10</option>
+              <option value="inv10fm">Inv10 ≥6 + FM</option>
               <option value="todos">Todos</option>
             </select>
-            <button class="btn" id="btnUpload" disabled>Upload</button>
             <button class="btn" id="btnExecutar">Executar</button>
             <button class="btn danger" id="btnCancelar" title="Cancelar execução">Cancelar</button>
           </div>
           <div id="statusArea" class="sub" aria-live="polite" style="margin-top:6px;"></div>
+          <div id="progress" class="progress" aria-hidden="true"><div id="progressBar" class="bar"></div></div>
+          <div id="progressText" class="progress-text"></div>
+          </div>
+          
+          <div id="progressInfo" class="progress-info"></div>
         </div>
 
         <div class="section" id="savedSection">
           <div class="section-title">Arquivos salvos</div>
           <div id="savedList" class="list"></div>
+        </div>
+
+        <div class="section" id="historySection">
+          <div class="section-title">Histórico de execuções (INV10)</div>
+          <div id="jobHistory" class="list"></div>
         </div>
       </div>
       <div class="footer">
