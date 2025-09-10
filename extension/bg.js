@@ -220,6 +220,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === 'INV10_GET_HISTORY') {
     (async ()=>{ try { const hist = await new Promise((resolve)=>{ try { chrome.storage.local.get([INV10_JOB_HISTORY_KEY], (r)=> resolve(Array.isArray(r?.[INV10_JOB_HISTORY_KEY]) ? r[INV10_JOB_HISTORY_KEY] : [])); } catch { resolve([]); } }); sendResponse({ ok:true, history: hist }); } catch(e){ sendResponse({ ok:false, error:String(e?.message||e) }); } })(); return true;
   }
+  if (message.type === 'INV10_CLEAR_HISTORY') {
+    (async ()=>{ try { await new Promise((resolve)=>{ try { chrome.storage.local.set({ [INV10_JOB_HISTORY_KEY]: [] }, ()=> resolve()); } catch { resolve(); } }); sendResponse({ ok:true }); } catch(e){ sendResponse({ ok:false, error:String(e?.message||e) }); } })(); return true;
+  }
   if (message.type === 'INV10_CANCEL') {
     (async ()=>{ const job = await getJob(); if (job && job.running) { job.cancel = true; await setJob(job); broadcastProgress(job); } try { if (inv10AbortController) inv10AbortController.abort(); } catch {} sendResponse({ ok:true }); })(); return true;
   }

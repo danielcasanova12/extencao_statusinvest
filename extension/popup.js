@@ -116,6 +116,7 @@
   const SELECTED_KEY = 'csv_selected_id';
   const savedList = $('#savedList');
   const jobHistory = $('#jobHistory');
+  const btnClearHistory = $('#btnClearHistory');
 
   function stGet(keys) { return new Promise((resolve) => chrome.storage.local.get(keys, resolve)); }
   function stGetSync(keys) { return new Promise((resolve) => { try { chrome.storage.sync.get(keys, resolve); } catch { resolve({}); } }); }
@@ -220,6 +221,21 @@
         jobHistory.appendChild(li);
       });
     } catch {}
+  }
+
+  if (btnClearHistory) {
+    btnClearHistory.addEventListener('click', async () => {
+      try {
+        chrome.runtime.sendMessage({ type: 'INV10_CLEAR_HISTORY' }, async (resp) => {
+          if (resp && resp.ok) {
+            setStatus('Histórico limpo');
+            await renderJobHistory();
+          } else {
+            setStatus('Falha ao limpar histórico');
+          }
+        });
+      } catch { setStatus('Falha ao limpar histórico'); }
+    });
   }
 
   if (savedList) {
