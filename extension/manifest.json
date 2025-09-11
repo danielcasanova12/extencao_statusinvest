@@ -24,6 +24,12 @@
       ],
       "js": ["cs-si-download.js"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://statusinvest.com.br/carteira/patrimonio*"
+      ],
+      "js": ["content.js"]
     }
   ]
 }
