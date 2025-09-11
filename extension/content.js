@@ -755,6 +755,12 @@ function initEqualWeightPlanPanel() {
       <div class="header">
         <h3 class="title">Plano de Rebalanceamento (Equal-Weight)</h3>
         <div class="controls">
+          <label>Fonte
+            <select id="ewSource">
+              <option value="fm" selected>Fórmula Mágica</option>
+              <option value="fm_inv10">FM + Inv10</option>
+            </select>
+          </label>
           <label>Top
             <select id="ewN">
               <option value="10" selected>10</option>
@@ -800,15 +806,20 @@ function initEqualWeightPlanPanel() {
 
   const $ = (sel) => root.querySelector(sel);
   const ewN = $('#ewN');
+  const ewSource = $('#ewSource');
   const ewTotal = $('#ewTotal');
   const ewBody = $('#ewBody');
   const ewBodyWrap = $('#ewBodyWrap');
   const ewToggle = $('#ewToggle');
   const ewModeInputs = root.querySelectorAll('input[name="ewMode"]');
   let ewMode = 'investir';
+  let ewSourceValue = 'fm';
   const MODE_KEY = 'ew_mode';
+  const SOURCE_KEY = 'ew_source';
   function loadMode() { return new Promise((resolve) => { try { chrome.storage.sync.get([MODE_KEY], (r) => resolve(r?.[MODE_KEY] || 'investir')); } catch { resolve('investir'); } }); }
   function saveMode(v) { return new Promise((resolve) => { try { chrome.storage.sync.set({ [MODE_KEY]: v }, () => resolve()); } catch { resolve(); } }); }
+  function loadSource() { return new Promise((resolve) => { try { chrome.storage.sync.get([SOURCE_KEY], (r) => resolve(r?.[SOURCE_KEY] || 'fm')); } catch { resolve('fm'); } }); }
+  function saveSource(v) { return new Promise((resolve) => { try { chrome.storage.sync.set({ [SOURCE_KEY]: v }, () => resolve()); } catch { resolve(); } }); }
   
 
   // Utils (pt-BR parsing/formatting)
@@ -881,7 +892,8 @@ function initEqualWeightPlanPanel() {
   }
 
   function fetchTopNFromAPI(cb) {
-    chrome.runtime.sendMessage({ type: 'GET_TOPN_CHECKLIST' }, (resp) => {
+    const source = ewSource.value || 'fm';
+    chrome.runtime.sendMessage({ type: 'GET_TOPN_CHECKLIST', source }, (resp) => {
       if (resp && resp.ok && resp.json && Array.isArray(resp.json.data)) cb(null, resp.json.data);
       else cb(new Error(resp?.error || 'fetch checklist failed'));
     });
@@ -899,12 +911,25 @@ function initEqualWeightPlanPanel() {
 
   function recompute() {
     const N = Number(ewN.value) || 10;
-    const total = parseMoneyBR(ewTotal.value);
+    const totalFromInput = parseMoneyBR(ewTotal.value);
     const holdings = readHoldingsFromPage();
     fetchTopNFromAPI((err, data) => {
       const normalized = normalizeChecklist(data);
       const top = normalized.slice(0, N);
-      const targetPer = Number.isFinite(total) && total > 0 ? total / N : 0;
+
+      let targetPer = 0;
+      if (ewMode === 'rebalancear') {
+        // No modo 'rebalancear', o total do input é o valor final desejado para o portfólio.
+        targetPer = Number.isFinite(totalFromInput) && totalFromInput > 0 ? totalFromInput / N : 0;
+      } else { // 'investir'
+        // No modo 'investir', o total do input é o novo dinheiro a ser investido.
+        // O alvo por ativo é calculado com base no valor total final do portfólio.
+        const investmentAmount = totalFromInput;
+        const currentPortfolioTotal = detectPortfolioTotal();
+        const finalPortfolioTotal = currentPortfolioTotal + (Number.isFinite(investmentAmount) ? investmentAmount : 0);
+        targetPer = finalPortfolioTotal > 0 ? finalPortfolioTotal / N : 0;
+      }
+
       ewBody.innerHTML = '';
       const computed = [];
       top.forEach((it) => {
@@ -923,14 +948,14 @@ function initEqualWeightPlanPanel() {
         });
       });
       // Integer allocation: two modes ('investir' vs 'rebalancear')
-      let budgetCents = Number.isFinite(total) && total > 0 ? Math.round(total * 100) : 0;
+      let budgetCents = Number.isFinite(totalFromInput) && totalFromInput > 0 ? Math.round(totalFromInput * 100) : 0;
       let spendMap = Object.create(null);
       let qtyMap = Object.create(null);
 
       if (ewMode === 'rebalancear') {
         // Interpret total as target final soma(ValueApós) dos Top N.
         // Portanto, o orçamento disponível para compras adicionais é: total - soma(ValorAtual).
-        const targetTotalCents = Number.isFinite(total) && total > 0 ? Math.round(total * 100) : 0;
+        const targetTotalCents = Number.isFinite(totalFromInput) && totalFromInput > 0 ? Math.round(totalFromInput * 100) : 0;
         const sumBaseCents = computed.reduce((acc, row) => acc + (Number.isFinite(row.currentAmount) ? Math.round(row.currentAmount * 100) : 0), 0);
         budgetCents = Math.max(0, targetTotalCents - sumBaseCents);
         // Rebalancear: compute target qty and buy only the additional quantity
@@ -1111,6 +1136,11 @@ function initEqualWeightPlanPanel() {
 
   // Events
   ewN.addEventListener('change', recompute);
+  ewSource.addEventListener('change', async () => {
+    ewSourceValue = ewSource.value;
+    await saveSource(ewSourceValue);
+    recompute();
+  });
   ewTotal.addEventListener('change', () => { // keep as BR currency if user typed raw number
     const n = parseMoneyBR(ewTotal.value);
     if (Number.isFinite(n)) ewTotal.value = n.toLocaleString('pt-BR', { style:'currency', currency:'BRL' });
@@ -1146,10 +1176,14 @@ function initEqualWeightPlanPanel() {
 
   // Load initial collapsed state
   loadCollapsed().then((c) => applyCollapseState(c));
-  // Load initial mode
-  loadMode().then((m) => {
+  // Load initial mode and source
+  Promise.all([loadMode(), loadSource()]).then(([m, s]) => {
     ewMode = m === 'rebalancear' ? 'rebalancear' : 'investir';
     ewModeInputs.forEach((inp) => { inp.checked = (inp.value === ewMode); });
+
+    ewSourceValue = s === 'fm_inv10' ? 'fm_inv10' : 'fm';
+    if (ewSource) ewSource.value = ewSourceValue;
+
     recompute();
   });
 

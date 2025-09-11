@@ -1,7 +1,7 @@
 // Background service worker (MV3)
 // - Centraliza chamadas à API e automações
 
-const DEFAULT_API_BASE = 'https://extencao-calq36ej1-daniels-projects-b07af66f.vercel.app';
+const DEFAULT_API_BASE = 'https://extencao-e9v52ezjr-daniels-projects-b07af66f.vercel.app';
 
 function getApiBase() {
   return new Promise((resolve) => {
@@ -39,9 +39,11 @@ async function fetchI10Scores() {
   return resp.json();
 }
 
-async function fetchTopNChecklist() {
+async function fetchTopNChecklist(source = 'fm') {
   const base = await getApiBase();
-  const resp = await fetch(base.replace(/\/$/, '') + '/api/checklist');
+  const endpoint = source === 'fm_inv10' ? '/api/checklist-inv10' : '/api/checklist';
+  const url = base.replace(/\/$/, '') + endpoint;
+  const resp = await fetch(url);
   if (!resp.ok) throw new Error('HTTP ' + resp.status);
   return resp.json();
 }
@@ -182,7 +184,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     (async ()=>{ try { const json = await fetchI10Scores(); sendResponse({ ok:true, json }); } catch(e){ sendResponse({ ok:false, error:String(e?.message||e) }); } })(); return true;
   }
   if (message.type === 'GET_TOPN_CHECKLIST') {
-    (async ()=>{ try { const json = await fetchTopNChecklist(); sendResponse({ ok:true, json }); } catch(e){ sendResponse({ ok:false, error:String(e?.message||e) }); } })(); return true;
+    (async ()=>{
+      try {
+        const source = message.source || 'fm';
+        const json = await fetchTopNChecklist(source);
+        sendResponse({ ok:true, json });
+      } catch(e){ sendResponse({ ok:false, error:String(e?.message||e) }); }
+    })();
+    return true;
   }
 
   if (message.type === 'FM_CALCULAR') {

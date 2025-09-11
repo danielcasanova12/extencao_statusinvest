@@ -1,13 +1,9 @@
-// Vercel Serverless Function: /api/checklist
-// Merges ranking_magic_checklist (base) with statusinvest_latest (prices/extra)
-// - Includes ONLY tickers present in ranking_magic_checklist
-// - Orders output by final_rank ASC
-// - Optional query: ?limit=200 (default 500, max 1000)
+// Vercel Serverless Function: GET /api/checklist
+// Retorna o ranking da tabela tb_formulamagica com preços da tb_statusinvest
 
 let pool;
 
 function setCors(_req, res) {
-  // Public CORS: allow any origin (read-only GET endpoints)
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
@@ -31,46 +27,26 @@ export default async function handler(req, res) {
 
   try {
     const db = await getPool();
-    const limit = Math.min(parseInt(req.query.limit, 10) || 500, 1000);
-
     const sql = `
       SELECT
-        r.ticker::text                AS ticker,
-        r.final_rank::int             AS final_rank,
-        r.i10_score                   AS i10_score,
-        r.earning_yield               AS earning_yield,
-        r.roic_pct                    AS roic_pct,
-        r.liquidity                   AS liquidity,
-        r.market_cap                  AS market_cap,
-        s.ts_utc                      AS ts_utc,
-        CAST(NULLIF(REPLACE(REPLACE(s.data->>'PRECO', '.', ''), ',', '.'), '') AS numeric) AS price
-      FROM ranking_magic_checklist r
-      LEFT JOIN statusinvest_latest s
-        ON UPPER(s.ticker) = UPPER(r.ticker)
-      ORDER BY r.final_rank ASC
-      LIMIT $1
+        fm.ticker,
+        fm.ticker as code,
+        fm.mf_rank_final as final_rank,
+        (
+          CASE
+            WHEN si.data->>'PRECO' IS NOT NULL AND si.data->>'PRECO' != ''
+            THEN CAST(REPLACE(REPLACE(si.data->>'PRECO', '.', ''), ',', '.') AS numeric)
+            ELSE NULL
+          END
+        ) as price
+      FROM tb_formulamagica fm
+      LEFT JOIN tb_statusinvest si ON fm.ticker = si.ticker
+      ORDER BY fm.mf_rank_final ASC;
     `;
-
-    const { rows } = await db.query(sql, [limit]);
-
-    // Normalize output minimally and add a code alias
-    const data = rows.map((r) => ({
-      code: (r.ticker || '').toString().trim().toUpperCase(),
-      ticker: r.ticker,
-      final_rank: typeof r.final_rank === 'number' ? r.final_rank : parseInt(r.final_rank, 10),
-      i10_score: r.i10_score,
-      price: r.price != null ? Number(r.price) : null,
-      // pass-through extras from ranking
-      earning_yield: r.earning_yield,
-      roic_pct: r.roic_pct,
-      liquidity: r.liquidity,
-      market_cap: r.market_cap,
-      ts_utc: r.ts_utc,
-    }));
-
-    return res.status(200).json({ ok: true, count: data.length, data });
+    const { rows } = await db.query(sql);
+    return res.status(200).json({ ok: true, count: rows.length, data: rows });
   } catch (err) {
-    console.error('API /checklist error:', err);
-    return res.status(500).json({ ok: false, error: String(err.message || err) });
+    console.error('[api/checklist] error:', err);
+    return res.status(500).json({ ok: false, error: String(err && (err.message || err)) });
   }
 }

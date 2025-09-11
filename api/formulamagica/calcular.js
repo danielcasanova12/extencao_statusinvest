@@ -198,7 +198,7 @@ function normalizeAndCompute(parsed, env) {
     });
   }
 
-  const LIQ_MIN = Number(process.env.MF_LIQ_MIN || (env && env.MF_LIQ_MIN) || 0);
+  const LIQ_MIN = Number(process.env.MF_LIQ_MIN || (env && env.MF_LIQ_MIN) || 2000000);
   const CHECK_MIN = Number(process.env.MF_CHECKLIST_MIN || (env && env.MF_CHECKLIST_MIN) || 0);
 
   const filtered = rows.filter((x) => {

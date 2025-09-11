@@ -175,5 +175,6 @@ Passo a passo: Extensão no Chrome
 4) CORS
 - A API já libera CORS para `https://statusinvest.com.br` e para origens `chrome-extension://...` (service worker e content).
 - Se mudar domínios ou precisar liberar outro site, ajuste a lista em `api/statusinvest-latest.js`.
-#   e x t e n c a o _ s t a t u s i n v e s t  
+#   e x t e n c a o _ s t a t u s i n v e s t 
+ 
  

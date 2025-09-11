@@ -24,6 +24,7 @@
       ],
       "js": ["cs-si-download.js"],
       "run_at": "document_idle"
+      
     },
     {
       "matches": [
