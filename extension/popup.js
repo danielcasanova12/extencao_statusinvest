@@ -3,6 +3,13 @@
   const $ = (sel) => document.querySelector(sel);
   const log = (msg) => { const el = $('#log'); if (el) el.textContent = String(msg || ''); };
 
+  const FINANCIAL_EXCLUSION_LIST = new Set([
+    'ITUB4', 'BPAC11', 'BBDC3', 'BBAS3', 'ITSA4', 'SANB11', 'B3SA3', 'BBSE3',
+    'CXSE3', 'PSSA3', 'MULT3', 'ALOS3', 'BPAN4', 'BNBR3', 'BRAP4', 'ABCB4',
+    'IGTA3', 'BRSR6', 'BMEB4', 'BAZA3', 'BSLI3', 'PLPL3', 'BEES3', 'BMGB4',
+    'LOGG3', 'PINE4', 'WIZC3', 'BPAR3', 'SYNE3'
+  ]);
+
   // removed btnOi (Mostrar oi)
 
   const btnPing = $('#btnPing');
@@ -292,23 +299,63 @@
     });
   }
 
+  function parseNumberBR(val) {
+    if (val == null) return null;
+    let s = String(val).trim();
+    if (!s) return null;
+    s = s.replace(/\s|R\$|\u00A0/g, '');
+    if (/\d,\d{1,3}$/.test(s) || (s.includes('.') && s.includes(','))) {
+      s = s.replace(/\./g, '').replace(/,/g, '.');
+    }
+    const n = Number(s);
+    return Number.isFinite(n) ? n : null;
+  }
+
   // Executar usa item selecionado (no-op)
   function norm(s){return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]/g,'');}
   function pickDelimiter(first){const c=(first||'').split(',').length; const s=(first||'').split(';').length; return s>c?';':',';}
   function splitCSVLine(line, d){const out=[];let cur='';let q=false;for(let i=0;i<line.length;i++){const ch=line[i];if(ch==='"'){if(q&&line[i+1]==='"'){cur+='"';i++;} else q=!q;} else if(ch===d && !q){out.push(cur);cur='';} else{cur+=ch;}} out.push(cur);return out;}
-  function extractTickersFromCsv(text){
-    try{
-      const lines=(text||'').split(/\r?\n/).filter(l=>l.trim().length); if(!lines.length) return [];
-      const d=pickDelimiter(lines[0]);
-      const headers=splitCSVLine(lines[0],d).map(h=>h.trim());
-      const map=new Map(headers.map(h=>[norm(h),h]));
-      const pick=(...c)=>{for(const cand of c){const k=norm(cand); if(map.has(k)) return map.get(k);} for(const cand of c){const k=norm(cand); const f=headers.find(h=>norm(h).includes(k)); if(f) return f;} return null;};
-      const col=pick('ticker','code','papel','symbol','ativo','tkr'); if(!col) return [];
-      const idx=headers.indexOf(col); if(idx<0) return [];
-      const out=new Set();
-      for(let i=1;i<lines.length;i++){const vals=splitCSVLine(lines[i],d); const v=(vals[idx]||'').trim(); if(v) out.add(v.toUpperCase());}
-      return Array.from(out);
-    }catch{return []}
+  function extractStocksFromCsv(text) {
+    try {
+      const lines = (text || '').split(/\r?\n/).filter(l => l.trim().length);
+      if (!lines.length) return [];
+      const d = pickDelimiter(lines[0]);
+      const headers = splitCSVLine(lines[0], d).map(h => h.trim());
+      const map = new Map(headers.map(h => [norm(h), h]));
+      const pick = (...c) => { for (const cand of c) { const k = norm(cand); if (map.has(k)) return map.get(k); } for (const cand of c) { const k = norm(cand); const f = headers.find(h => norm(h).includes(k)); if (f) return f; } return null; };
+      
+      const tickerCol = pick('ticker', 'code', 'papel', 'symbol', 'ativo', 'tkr');
+      const liqCol = pick('liquidez', 'liquidity', 'avg_liquidity', 'liquid', 'volmedio', 'volume medio');
+      const mcCol = pick('market_cap', 'marketcap', 'valor_mercado', 'valor de mercado', 'market cap', 'vlmercado', 'valormercado');
+
+      if (!tickerCol || !liqCol || !mcCol) {
+        console.warn('CSV missing required columns for filtering: ticker, liquidez, or market_cap. Scraping will be skipped.');
+        return [];
+      }
+
+      const tickerIdx = headers.indexOf(tickerCol);
+      const liqIdx = headers.indexOf(liqCol);
+      const mcIdx = headers.indexOf(mcCol);
+
+      if (tickerIdx < 0 || liqIdx < 0 || mcIdx < 0) return [];
+
+      const out = [];
+      for (let i = 1; i < lines.length; i++) {
+        const vals = splitCSVLine(lines[i], d);
+        const ticker = (vals[tickerIdx] || '').trim().toUpperCase();
+        if (ticker) {
+          out.push({
+            ticker: ticker,
+            liquidez: parseNumberBR(vals[liqIdx]),
+            market_cap: parseNumberBR(vals[mcIdx]),
+          });
+        }
+      }
+      return out;
+    } catch (e) {
+      console.error('Error parsing CSV for stocks:', e);
+      return [];
+    }
   }
 
   if (btnExecutar) {
@@ -320,8 +367,19 @@
       const tipo = execTipo ? execTipo.value : 'formulamagica';
       if (tipo === 'inv10') {
         if (!sel.content) { setStatus('Item sem conteúdo. Faça o upload novamente.'); return; }
-        const tickers = extractTickersFromCsv(sel.content);
-        if (!tickers.length) { setStatus('Não foi possível extrair tickers do CSV.'); return; }
+        
+        const allStocks = extractStocksFromCsv(sel.content);
+        if (!allStocks.length) { setStatus('Não foi possível extrair ações do CSV ou colunas (liquidez, market_cap) estão ausentes.'); return; }
+
+        const stocksToScrape = allStocks.filter(stock => 
+            !FINANCIAL_EXCLUSION_LIST.has(stock.ticker) &&
+            stock.liquidez != null && stock.market_cap != null &&
+            stock.liquidez >= 1000000 && stock.market_cap >= 90000000
+        );
+        const tickers = stocksToScrape.map(s => s.ticker);
+
+        if (!tickers.length) { setStatus('Nenhuma ação no CSV atende aos critérios de liquidez/capitalização.'); return; }
+        
         setStatus(`Iniciando raspagem de ${tickers.length} tickers...`);
         setProgress(tickers.length, 0);
         setProgressInfo({ running: true, stage: 'init', total: tickers.length, ok: 0, fail: 0, startedAt: new Date().toISOString() });
@@ -358,12 +416,23 @@
               const p = resp.json && (resp.json.processed || 0);
               const diag = resp.json && resp.json.diag;
               const extra = diag ? ` | lidas: ${diag.parsed_rows}, após filtros: ${diag.after_compute}` : '';
-              setStatus(`FM ok. Inseridos: ${p}${extra}. Iniciando Investidor10...`);
-              const tickers = extractTickersFromCsv(sel.content);
-              if (!tickers.length) { setStatus('FM ok. Não foi possível extrair tickers para o Investidor10.'); return; }
+            setStatus(`FM ok. Inseridos: ${p}${extra}. Filtrando para Investidor10...`);
+            
+            const allStocks = extractStocksFromCsv(sel.content);
+            if (!allStocks.length) { setStatus('FM ok. Não foi possível extrair tickers para o Investidor10 (verificar colunas).'); return; }
+
+            const stocksToScrape = allStocks.filter(stock => 
+                !FINANCIAL_EXCLUSION_LIST.has(stock.ticker) &&
+                stock.liquidez != null && stock.market_cap != null &&
+                stock.liquidez >= 1000000 && stock.market_cap >= 90000000
+            );
+            const tickers = stocksToScrape.map(s => s.ticker);
+
+            if (!tickers.length) { setStatus('FM ok. Nenhuma ação no CSV atende aos critérios para o Investidor10.'); return; }
+            
               try {
                 chrome.runtime.sendMessage({ type: 'INV10_START', tickers }, (r2) => {
-                  if (r2 && r2.ok) setStatus('INV10 iniciado...');
+                if (r2 && r2.ok) { setStatus(`INV10 iniciado para ${tickers.length} tickers...`); startJobPolling(); }
                   else setStatus(`INV10 erro ao iniciar: ${r2 && r2.error ? r2.error : 'falha desconhecida'}`);
                 });
               } catch (e2) { setStatus(String(e2)); }

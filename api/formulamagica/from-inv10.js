@@ -101,7 +101,11 @@ export default async function handler(req, res) {
     // 3) Recalcula ranks para o subconjunto
     const byTicker = new Map();
     fmRows.forEach((r) => { byTicker.set(String(r.ticker || '').trim().toUpperCase(), r); });
-    const subset = tickers.map((t) => byTicker.get(t)).filter(Boolean);
+    const subset = tickers.map((t) => byTicker.get(t)).filter(x => 
+      x &&
+      x.liquidez != null && x.market_cap != null &&
+      x.liquidez >= 1000000 && x.market_cap >= 90000000
+    );
     if (!subset.length) return res.status(200).json({ ok: true, processed: 0, reason: 'no_overlap' });
 
     const eyVals = subset.map((x) => (x.ey != null ? Number(x.ey) : null));

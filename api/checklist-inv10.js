@@ -41,6 +41,7 @@ export default async function handler(req, res) {
         ) as price
       FROM tb_formulamagica_inv10 fm
       LEFT JOIN tb_statusinvest si ON fm.ticker = si.ticker
+      WHERE fm.liquidez >= 1000000 AND fm.market_cap >= 90000000
       ORDER BY fm.mf_rank_final ASC;
     `;
     const { rows } = await db.query(sql);

@@ -32,6 +32,7 @@ export default async function handler(req, res) {
         ticker as code,
         mf_rank_final as final_rank
       FROM tb_formulamagica
+      WHERE liquidez >= 1000000 AND market_cap >= 90000000
       ORDER BY mf_rank_final ASC;
     `;
     const { rows } = await db.query(sql);
