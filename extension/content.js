@@ -464,6 +464,44 @@
   // Overlay menu handled by a lightweight global content script (overlay.js).
 })();
 
+function setShowAllOnPagination() {
+  return new Promise((resolve, reject) => {
+    try {
+      // 1. Expand all collapsed sections to ensure their content is visible and interactive.
+      document.querySelectorAll('li.group:not(.active) .collapsible-header').forEach(header => {
+        if (header) header.click();
+      });
+
+      // 2. Wait for sections to expand and for the DOM to update.
+      setTimeout(() => {
+        try {
+          // 3. Find all pagination controls and set them to "TODOS".
+          document.querySelectorAll('.pagination-control').forEach(control => {
+            const selectElement = control.querySelector('select[data-formselect]');
+            if (!selectElement || selectElement.value === '-1') return;
+
+            const dropdownInput = control.querySelector('input.select-dropdown');
+            if (!dropdownInput) return;
+
+            const dropdownId = dropdownInput.dataset.target;
+            if (!dropdownId) return;
+            
+            const dropdownUl = document.getElementById(dropdownId);
+            if (!dropdownUl) return;
+
+            const todosLi = Array.from(dropdownUl.querySelectorAll('li > span'))
+                                 .find(span => span.textContent.trim().toUpperCase() === 'TODOS')
+                                 ?.parentElement;
+
+            if (todosLi && !todosLi.classList.contains('selected')) todosLi.click();
+          });
+          resolve(); // Promise resolves successfully
+        } catch (e) { reject(e); }
+      }, 1000); // Wait 1s for animations
+    } catch (e) { reject(e); }
+  });
+}
+
 // Floating Shadow DOM panel: Rebalance dates manager
 // Idempotent and robust to SPA rerenders
 (function () {
@@ -775,7 +813,7 @@ function initEqualWeightPlanPanel() {
             <label title="Compra com base no orçamento, sem vender posições."><input type="radio" name="ewMode" value="investir" checked /> Investir</label>
             <label title="Ajusta quantidades para chegar ao alvo por ativo; só considera compras adicionais."><input type="radio" name="ewMode" value="rebalancear" /> Rebalancear</label>
           </span>
-          
+          <button id="ewUpdateMyStocks" class="toggle-btn" type="button" title="Exibe todos os ativos e salva a lista da sua carteira para uso nos cálculos.">Atualizar Minhas Ações</button>
           <button id="ewToggle" class="toggle-btn" type="button">Ocultar</button>
         </div>
       </div>
@@ -811,6 +849,7 @@ function initEqualWeightPlanPanel() {
   const ewBody = $('#ewBody');
   const ewBodyWrap = $('#ewBodyWrap');
   const ewToggle = $('#ewToggle');
+  const ewUpdateMyStocks = $('#ewUpdateMyStocks');
   const ewModeInputs = root.querySelectorAll('input[name="ewMode"]');
   let ewMode = 'investir';
   let ewSourceValue = 'fm';
@@ -912,219 +951,218 @@ function initEqualWeightPlanPanel() {
   function recompute() {
     const N = Number(ewN.value) || 10;
     const totalFromInput = parseMoneyBR(ewTotal.value);
-    const holdings = readHoldingsFromPage();
-    fetchTopNFromAPI((err, data) => {
-      const normalized = normalizeChecklist(data);
-      const top = normalized.slice(0, N);
 
-      let targetPer = 0;
-      if (ewMode === 'rebalancear') {
-        // No modo 'rebalancear', o total do input é o valor final desejado para o portfólio.
-        targetPer = Number.isFinite(totalFromInput) && totalFromInput > 0 ? totalFromInput / N : 0;
-      } else { // 'investir'
-        // No modo 'investir', o total do input é o novo dinheiro a ser investido.
-        // O alvo por ativo é calculado com base no valor total final do portfólio.
-        const investmentAmount = totalFromInput;
-        const currentPortfolioTotal = detectPortfolioTotal();
-        const finalPortfolioTotal = currentPortfolioTotal + (Number.isFinite(investmentAmount) ? investmentAmount : 0);
-        targetPer = finalPortfolioTotal > 0 ? finalPortfolioTotal / N : 0;
+    chrome.storage.local.get(['my_portfolio_holdings'], (result) => {
+      const holdings = result.my_portfolio_holdings;
+
+      if (!holdings || typeof holdings !== 'object' || Object.keys(holdings).length === 0) {
+        ewBody.innerHTML = `
+          <tr>
+            <td colspan="10" style="text-align: center; padding: 20px; color: #6b7280; font-style: italic;">
+              Sua carteira ainda não foi carregada. Por favor, clique no botão "Atualizar Minhas Ações" para fazer a leitura inicial.
+            </td>
+          </tr>
+        `;
+        return;
       }
 
-      ewBody.innerHTML = '';
-      const computed = [];
-      top.forEach((it) => {
-        const fromPage = holdings[it.code] || { price: NaN, qty: 0 };
-        const price = Number.isFinite(it.price) && it.price > 0 ? it.price : fromPage.price;
-        const qty = Number.isFinite(fromPage.qty) ? fromPage.qty : 0;
-        const currentAmount = Number.isFinite(price) ? price * qty : NaN;
-        computed.push({
-          rank: it.rank,
-          code: it.code,
-          price,
-          qty,
-          currentAmount,
-          targetPer,
-          // rest computed later by integer allocator
-        });
-      });
-      // Integer allocation: two modes ('investir' vs 'rebalancear')
-      let budgetCents = Number.isFinite(totalFromInput) && totalFromInput > 0 ? Math.round(totalFromInput * 100) : 0;
-      let spendMap = Object.create(null);
-      let qtyMap = Object.create(null);
+      fetchTopNFromAPI((err, data) => {
+        if (err) {
+          ewBody.innerHTML = `<tr><td colspan="10" style="text-align: center; padding: 20px; color: #c62828;">Erro ao buscar dados da API: ${err.message}</td></tr>`;
+          return;
+        }
+        const normalized = normalizeChecklist(data);
+        const top = normalized.slice(0, N);
 
-      if (ewMode === 'rebalancear') {
-        // Interpret total as target final soma(ValueApós) dos Top N.
-        // Portanto, o orçamento disponível para compras adicionais é: total - soma(ValorAtual).
-        const targetTotalCents = Number.isFinite(totalFromInput) && totalFromInput > 0 ? Math.round(totalFromInput * 100) : 0;
-        const sumBaseCents = computed.reduce((acc, row) => acc + (Number.isFinite(row.currentAmount) ? Math.round(row.currentAmount * 100) : 0), 0);
-        budgetCents = Math.max(0, targetTotalCents - sumBaseCents);
-        // Rebalancear: compute target qty and buy only the additional quantity
-        const items = computed.map((row) => {
-          const priceCents = Number.isFinite(row.price) && row.price > 0 ? Math.round(row.price * 100) : 0;
-          const baseCents = Number.isFinite(row.currentAmount) ? Math.round(row.currentAmount * 100) : 0;
-          const targetCents = Number.isFinite(row.targetPer) ? Math.round(row.targetPer * 100) : 0;
-          const targetQty = priceCents > 0 ? Math.floor(targetCents / priceCents) : 0;
-          const baseQty = Number.isFinite(row.qty) ? row.qty : 0;
-          const deltaQty = Math.max(0, targetQty - baseQty);
-          const deficitCents = Math.max(0, targetCents - baseCents);
-          return { code: row.code, rank: row.rank, priceCents, baseCents, targetCents, targetQty, deltaQty, deficitCents, q: 0, spendCents: 0 };
-        });
-
-        const minEligible = () => {
-          let m = Number.MAX_SAFE_INTEGER;
-          for (const it of items) if (it.priceCents > 0 && it.deltaQty > 0) m = Math.min(m, it.priceCents);
-          return m;
-        };
-        const canBuyAny = () => items.some((it) => it.deltaQty > 0 && it.priceCents > 0 && it.priceCents <= budgetCents);
-        while (canBuyAny() && budgetCents >= minEligible()) {
-          // Update deficits based on current spend
-          for (const it of items) {
-            const after = it.baseCents + it.spendCents;
-            it.deficitCents = Math.max(0, it.targetCents - after);
-          }
-          // Pick best by highest deficit ratio, then higher deficit, then lower price, then better rank
-          let best = null;
-          let bestRatio = -1;
-          for (const it of items) {
-            if (it.deltaQty <= 0 || it.priceCents <= 0 || it.priceCents > budgetCents) continue;
-            const ratio = it.priceCents > 0 ? (it.deficitCents / it.priceCents) : 0;
-            if (
-              ratio > bestRatio ||
-              (Math.abs(ratio - bestRatio) < 1e-9 && (
-                it.deficitCents > (best?.deficitCents ?? -1) ||
-                (it.deficitCents === (best?.deficitCents ?? -1) && (
-                  it.priceCents < (best?.priceCents ?? Number.MAX_SAFE_INTEGER) ||
-                  (it.priceCents === (best?.priceCents ?? 0) && it.rank < (best?.rank ?? 1e9))
-                ))
-              ))
-            ) {
-              best = it; bestRatio = ratio;
+        let targetPer = 0;
+        if (ewMode === 'rebalancear') {
+          targetPer = Number.isFinite(totalFromInput) && totalFromInput > 0 ? totalFromInput / N : 0;
+        } else { // 'investir'
+          const investmentAmount = totalFromInput;
+          const currentPortfolioTotal = Object.values(holdings).reduce((acc, stock) => {
+            if (stock && Number.isFinite(stock.price) && Number.isFinite(stock.qty)) {
+              return acc + (stock.price * stock.qty);
             }
-          }
-          if (!best) break;
-          // Buy 1 share
-          best.q += 1;
-          best.deltaQty -= 1;
-          best.spendCents += best.priceCents;
-          budgetCents -= best.priceCents;
+            return acc;
+          }, 0);
+          const finalPortfolioTotal = currentPortfolioTotal + (Number.isFinite(investmentAmount) ? investmentAmount : 0);
+          targetPer = finalPortfolioTotal > 0 ? finalPortfolioTotal / N : 0;
         }
 
-        // Map results
-        spendMap = Object.create(null);
-        qtyMap = Object.create(null);
-        for (const it of items) { spendMap[it.code] = (it.spendCents || 0) / 100; qtyMap[it.code] = it.q || 0; }
-      } else {
-        // Investir: buy towards targets and then equalize values with remaining budget
-        const items = computed.map((row) => {
-          const priceCents = Number.isFinite(row.price) && row.price > 0 ? Math.round(row.price * 100) : 0;
-          const baseCents = Number.isFinite(row.currentAmount) ? Math.round(row.currentAmount * 100) : 0;
-          const targetCents = Number.isFinite(row.targetPer) ? Math.round(row.targetPer * 100) : 0;
-          const deficitCents = Math.max(0, targetCents - baseCents);
-          return { code: row.code, rank: row.rank, priceCents, baseCents, targetCents, deficitCents, q: 0, spendCents: 0 };
+        ewBody.innerHTML = '';
+        const computed = [];
+        top.forEach((it) => {
+          const fromCache = holdings[it.code] || { price: NaN, qty: 0 };
+          const price = Number.isFinite(it.price) && it.price > 0 ? it.price : fromCache.price;
+          const qty = Number.isFinite(fromCache.qty) ? fromCache.qty : 0;
+          const currentAmount = Number.isFinite(price) ? price * qty : NaN;
+          computed.push({
+            rank: it.rank,
+            code: it.code,
+            price,
+            qty,
+            currentAmount,
+            targetPer,
+          });
         });
+        
+        let budgetCents = Number.isFinite(totalFromInput) && totalFromInput > 0 ? Math.round(totalFromInput * 100) : 0;
+        let spendMap = Object.create(null);
+        let qtyMap = Object.create(null);
 
-        const minPrice = () => {
-          let m = Number.MAX_SAFE_INTEGER;
-          for (const it of items) if (it.priceCents > 0) m = Math.min(m, it.priceCents);
-          return m;
-        };
+        if (ewMode === 'rebalancear') {
+          const targetTotalCents = Number.isFinite(totalFromInput) && totalFromInput > 0 ? Math.round(totalFromInput * 100) : 0;
+          const sumBaseCents = computed.reduce((acc, row) => acc + (Number.isFinite(row.currentAmount) ? Math.round(row.currentAmount * 100) : 0), 0);
+          budgetCents = Math.max(0, targetTotalCents - sumBaseCents);
+          const items = computed.map((row) => {
+            const priceCents = Number.isFinite(row.price) && row.price > 0 ? Math.round(row.price * 100) : 0;
+            const baseCents = Number.isFinite(row.currentAmount) ? Math.round(row.currentAmount * 100) : 0;
+            const targetCents = Number.isFinite(row.targetPer) ? Math.round(row.targetPer * 100) : 0;
+            const targetQty = priceCents > 0 ? Math.floor(targetCents / priceCents) : 0;
+            const baseQty = Number.isFinite(row.qty) ? row.qty : 0;
+            const deltaQty = Math.max(0, targetQty - baseQty);
+            const deficitCents = Math.max(0, targetCents - baseCents);
+            return { code: row.code, rank: row.rank, priceCents, baseCents, targetCents, targetQty, deltaQty, deficitCents, q: 0, spendCents: 0 };
+          });
 
-        const canAffordAny = () => items.some((it) => it.priceCents > 0 && it.priceCents <= budgetCents);
-        while (canAffordAny() && budgetCents >= minPrice()) {
-          // Update dynamic deficits based on current spend
-          for (const it of items) {
-            const after = it.baseCents + it.spendCents;
-            it.deficitCents = Math.max(0, it.targetCents - after);
-          }
-
-          // Prefer items still below initial target; else pick the one with smallest valueAfter
-          const eligByDef = items.filter((it) => it.deficitCents > 0 && it.priceCents > 0 && it.priceCents <= budgetCents);
-
-          let best = null;
-          if (eligByDef.length) {
+          const minEligible = () => {
+            let m = Number.MAX_SAFE_INTEGER;
+            for (const it of items) if (it.priceCents > 0 && it.deltaQty > 0) m = Math.min(m, it.priceCents);
+            return m;
+          };
+          const canBuyAny = () => items.some((it) => it.deltaQty > 0 && it.priceCents > 0 && it.priceCents <= budgetCents);
+          while (canBuyAny() && budgetCents >= minEligible()) {
+            for (const it of items) {
+              const after = it.baseCents + it.spendCents;
+              it.deficitCents = Math.max(0, it.targetCents - after);
+            }
+            let best = null;
             let bestRatio = -1;
-            for (const it of eligByDef) {
-              const ratio = it.deficitCents / it.priceCents;
+            for (const it of items) {
+              if (it.deltaQty <= 0 || it.priceCents <= 0 || it.priceCents > budgetCents) continue;
+              const ratio = it.priceCents > 0 ? (it.deficitCents / it.priceCents) : 0;
               if (
                 ratio > bestRatio ||
                 (Math.abs(ratio - bestRatio) < 1e-9 && (
-                  it.priceCents < (best?.priceCents ?? Number.MAX_SAFE_INTEGER) ||
-                  (it.priceCents === (best?.priceCents ?? 0) && it.rank < (best?.rank ?? 1e9))
+                  it.deficitCents > (best?.deficitCents ?? -1) ||
+                  (it.deficitCents === (best?.deficitCents ?? -1) && (
+                    it.priceCents < (best?.priceCents ?? Number.MAX_SAFE_INTEGER) ||
+                    (it.priceCents === (best?.priceCents ?? 0) && it.rank < (best?.rank ?? 1e9))
+                  ))
                 ))
               ) {
                 best = it; bestRatio = ratio;
               }
             }
-          } else {
-            // All at/above target; continue equalizing by raising the lowest valueAfter
-            let bestVal = Number.MAX_SAFE_INTEGER;
-            for (const it of items) {
-              if (it.priceCents <= 0 || it.priceCents > budgetCents) continue;
-              const after = it.baseCents + it.spendCents;
-              if (
-                after < bestVal ||
-                (after === bestVal && (
-                  it.priceCents < (best?.priceCents ?? Number.MAX_SAFE_INTEGER) ||
-                  (it.priceCents === (best?.priceCents ?? 0) && it.rank < (best?.rank ?? 1e9))
-                ))
-              ) {
-                best = it; bestVal = after;
-              }
-            }
             if (!best) break;
+            best.q += 1;
+            best.deltaQty -= 1;
+            best.spendCents += best.priceCents;
+            budgetCents -= best.priceCents;
           }
 
-          // Buy 1 share of 'best'
-          best.q += 1;
-          best.spendCents += best.priceCents;
-          budgetCents -= best.priceCents;
+          spendMap = Object.create(null);
+          qtyMap = Object.create(null);
+          for (const it of items) { spendMap[it.code] = (it.spendCents || 0) / 100; qtyMap[it.code] = it.q || 0; }
+        } else {
+          const items = computed.map((row) => {
+            const priceCents = Number.isFinite(row.price) && row.price > 0 ? Math.round(row.price * 100) : 0;
+            const baseCents = Number.isFinite(row.currentAmount) ? Math.round(row.currentAmount * 100) : 0;
+            const targetCents = Number.isFinite(row.targetPer) ? Math.round(row.targetPer * 100) : 0;
+            const deficitCents = Math.max(0, targetCents - baseCents);
+            return { code: row.code, rank: row.rank, priceCents, baseCents, targetCents, deficitCents, q: 0, spendCents: 0 };
+          });
+
+          const minPrice = () => {
+            let m = Number.MAX_SAFE_INTEGER;
+            for (const it of items) if (it.priceCents > 0) m = Math.min(m, it.priceCents);
+            return m;
+          };
+
+          const canAffordAny = () => items.some((it) => it.priceCents > 0 && it.priceCents <= budgetCents);
+          while (canAffordAny() && budgetCents >= minPrice()) {
+            for (const it of items) {
+              const after = it.baseCents + it.spendCents;
+              it.deficitCents = Math.max(0, it.targetCents - after);
+            }
+
+            const eligByDef = items.filter((it) => it.deficitCents > 0 && it.priceCents > 0 && it.priceCents <= budgetCents);
+
+            let best = null;
+            if (eligByDef.length) {
+              let bestRatio = -1;
+              for (const it of eligByDef) {
+                const ratio = it.deficitCents / it.priceCents;
+                if (
+                  ratio > bestRatio ||
+                  (Math.abs(ratio - bestRatio) < 1e-9 && (
+                    it.priceCents < (best?.priceCents ?? Number.MAX_SAFE_INTEGER) ||
+                    (it.priceCents === (best?.priceCents ?? 0) && it.rank < (best?.rank ?? 1e9))
+                  ))
+                ) {
+                  best = it; bestRatio = ratio;
+                }
+              }
+            } else {
+              let bestVal = Number.MAX_SAFE_INTEGER;
+              for (const it of items) {
+                if (it.priceCents <= 0 || it.priceCents > budgetCents) continue;
+                const after = it.baseCents + it.spendCents;
+                if (
+                  after < bestVal ||
+                  (after === bestVal && (
+                    it.priceCents < (best?.priceCents ?? Number.MAX_SAFE_INTEGER) ||
+                    (it.priceCents === (best?.priceCents ?? 0) && it.rank < (best?.rank ?? 1e9))
+                  ))
+                ) {
+                  best = it; bestVal = after;
+                }
+              }
+              if (!best) break;
+            }
+
+            best.q += 1;
+            best.spendCents += best.priceCents;
+            budgetCents -= best.priceCents;
+          }
+
+          spendMap = Object.create(null);
+          qtyMap = Object.create(null);
+          for (const it of items) { spendMap[it.code] = (it.spendCents || 0) / 100; qtyMap[it.code] = it.q || 0; }
         }
 
-        // Map results back
-        spendMap = Object.create(null);
-        qtyMap = Object.create(null);
-        for (const it of items) { spendMap[it.code] = (it.spendCents || 0) / 100; qtyMap[it.code] = it.q || 0; }
-      }
+        computed.forEach((row) => {
+          const tr = document.createElement('tr');
+          const cost = Number(spendMap[row.code] || 0);
+          const valueAfter = (Number.isFinite(row.currentAmount) ? row.currentAmount : 0) + cost;
+          const faltaAfter = Number.isFinite(row.targetPer) ? Math.max(0, row.targetPer - valueAfter) : NaN;
+          const qtyToBuy = Number(qtyMap[row.code] || 0);
+          if (Number.isFinite(row.qty) && row.qty > 0) tr.classList.add('row-holding');
+          tr.innerHTML = `
+            <td>${row.rank}</td>
+            <td>${row.code}</td>
+            <td class="num">${Number.isFinite(row.price) ? fmtBRL(row.price) : '<span class="muted">—</span>'}</td>
+            <td class="num">${Number.isFinite(row.qty) ? row.qty : '<span class="muted">—</span>'}</td>
+            <td class="num">${Number.isFinite(row.currentAmount) ? fmtBRL(row.currentAmount) : '<span class="muted">—</span>'}</td>
+            <td class="num">${Number.isFinite(row.targetPer) ? fmtBRL(row.targetPer) : '<span class="muted">—</span>'}</td>
+            <td class="num">${(Number.isFinite(row.currentAmount) || Number.isFinite(cost)) ? fmtBRL(valueAfter) : '<span class="muted">—</span>'}</td>
+            <td class="num">${Number.isFinite(faltaAfter) ? fmtBRL(faltaAfter) : '<span class="muted">—</span>'}</td>
+            <td class="num">${qtyToBuy > 0 ? qtyToBuy : '<span class="muted">—</span>'}</td>
+            <td class="num">${fmtBRL(cost)}</td>
+          `;
+          ewBody.appendChild(tr);
+        });
 
-      // Render main table with resulting allocation
-      computed.forEach((row) => {
-        const tr = document.createElement('tr');
-        const cost = Number(spendMap[row.code] || 0);
-        const valueAfter = (Number.isFinite(row.currentAmount) ? row.currentAmount : 0) + cost;
-        const faltaAfter = Number.isFinite(row.targetPer) ? Math.max(0, row.targetPer - valueAfter) : NaN;
-        const qtyToBuy = Number(qtyMap[row.code] || 0);
-        if (Number.isFinite(row.qty) && row.qty > 0) tr.classList.add('row-holding');
-        tr.innerHTML = `
-          <td>${row.rank}</td>
-          <td>${row.code}</td>
-          <td class="num">${Number.isFinite(row.price) ? fmtBRL(row.price) : '<span class="muted">—</span>'}</td>
-          <td class="num">${Number.isFinite(row.qty) ? row.qty : '<span class="muted">—</span>'}</td>
-          <td class="num">${Number.isFinite(row.currentAmount) ? fmtBRL(row.currentAmount) : '<span class="muted">—</span>'}</td>
-          <td class="num">${Number.isFinite(row.targetPer) ? fmtBRL(row.targetPer) : '<span class="muted">—</span>'}</td>
-          <td class="num">${(Number.isFinite(row.currentAmount) || Number.isFinite(cost)) ? fmtBRL(valueAfter) : '<span class="muted">—</span>'}</td>
-          <td class="num">${Number.isFinite(faltaAfter) ? fmtBRL(faltaAfter) : '<span class="muted">—</span>'}</td>
-          <td class="num">${qtyToBuy > 0 ? qtyToBuy : '<span class="muted">—</span>'}</td>
-          <td class="num">${fmtBRL(cost)}</td>
+        const remainder = Math.max(0, budgetCents) / 100;
+        const remTr = document.createElement('tr');
+        remTr.innerHTML = `
+          <td></td>
+          <td><strong>Sobra</strong></td>
+          <td class="num" colspan="7"><span class="muted">—</span></td>
+          <td class="num">${fmtBRL(remainder)}</td>
         `;
-        ewBody.appendChild(tr);
+        ewBody.appendChild(remTr);
       });
-
-      // Append remainder as the last row
-      const remainder = Math.max(0, budgetCents) / 100;
-      const remTr = document.createElement('tr');
-      remTr.innerHTML = `
-        <td></td>
-        <td><strong>Sobra</strong></td>
-        <td class="num"><span class="muted">—</span></td>
-        <td class="num"><span class="muted">—</span></td>
-        <td class="num"><span class="muted">—</span></td>
-        <td class="num"><span class="muted">—</span></td>
-        <td class="num"><span class="muted">—</span></td>
-        <td class="num"><span class="muted">—</span></td>
-        <td class="num">—</td>
-        <td class="num">${fmtBRL(remainder)}</td>
-      `;
-      ewBody.appendChild(remTr);
     });
   }
 
@@ -1145,6 +1183,37 @@ function initEqualWeightPlanPanel() {
     const n = parseMoneyBR(ewTotal.value);
     if (Number.isFinite(n)) ewTotal.value = n.toLocaleString('pt-BR', { style:'currency', currency:'BRL' });
     recompute();
+  });
+  ewUpdateMyStocks.addEventListener('click', async () => {
+    ewUpdateMyStocks.disabled = true;
+    const originalText = ewUpdateMyStocks.textContent;
+    ewUpdateMyStocks.textContent = 'Atualizando...';
+
+    try {
+      await setShowAllOnPagination();
+    } catch (e) {
+      console.error('[StatusInvest Ext] Erro ao tentar exibir todos os ativos:', e);
+      ewUpdateMyStocks.disabled = false;
+      ewUpdateMyStocks.textContent = originalText;
+      return;
+    }
+
+    // Aguarda a página atualizar a lista de ativos
+    setTimeout(() => {
+      try {
+        const holdings = readHoldingsFromPage();
+        chrome.storage.local.set({ my_portfolio_holdings: holdings }, () => {
+          const tickers = Object.keys(holdings);
+          console.log('[StatusInvest Ext] Ações da carteira salvas:', tickers);
+          ewUpdateMyStocks.textContent = `Carteira salva (${tickers.length} ativos)!`;
+          setTimeout(() => {
+            ewUpdateMyStocks.disabled = false;
+            ewUpdateMyStocks.textContent = originalText;
+            recompute(); // Recalcula o plano com os novos dados
+          }, 3000);
+        });
+      } catch (e) { console.error('[StatusInvest Ext] Erro ao ler/salvar ações:', e); ewUpdateMyStocks.disabled = false; ewUpdateMyStocks.textContent = originalText; }
+    }, 3000); // 3s de espera para a página renderizar
   });
   // Mode change
   ewModeInputs.forEach((inp) => {
