@@ -1,7 +1,7 @@
 // Background service worker (MV3)
 // - Centraliza chamadas à API e automações
 
-const DEFAULT_API_BASE = 'https://extencao-7agzjutqp-daniels-projects-b07af66f.vercel.app';
+const DEFAULT_API_BASE = 'https://extencao-pqe86s8qu-daniels-projects-b07af66f.vercel.app';
 
 function getApiBase() {
   return new Promise((resolve) => {

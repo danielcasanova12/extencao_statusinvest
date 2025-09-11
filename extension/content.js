@@ -825,6 +825,7 @@ function initEqualWeightPlanPanel() {
                 <th>Rank</th>
                 <th>Ticker</th>
                 <th class="num">Preço</th>
+                <th class="num">Preço Médio</th>
                 <th class="num">Qtd atual</th>
                 <th class="num">Valor atual</th>
                 <th class="num">Alvo por ativo</th>
@@ -917,15 +918,18 @@ function initEqualWeightPlanPanel() {
   function readHoldingsFromPage() {
     const map = Object.create(null);
     document.querySelectorAll('tbody.list tr.item').forEach((r) => {
-      const codeCell = r.querySelector('td[data-key="code"] .ticker');
-      const code = (codeCell?.textContent || '').trim().toUpperCase();
+      const codeTd = r.querySelector('td[data-key="code"]');
+      const code = (codeTd?.getAttribute('title') || codeTd?.textContent || '').trim().toUpperCase();
       if (!code) return;
       const p = r.querySelector('td[data-key="price"]');
       const q = r.querySelector('td[data-key="quantity"]');
+      const avg = r.querySelector('td[data-key="unitValue"]');
       let price = Number(p?.getAttribute('title'));
       if (!Number.isFinite(price)) price = parseMoneyBR(p?.textContent);
       const qty = Number(q?.getAttribute('title')) || parseIntBR(q?.textContent);
-      map[code] = { price: Number.isFinite(price) ? price : NaN, qty: Number.isFinite(qty) ? qty : 0 };
+      let avgPrice = Number(avg?.getAttribute('title'));
+      if (!Number.isFinite(avgPrice)) avgPrice = parseMoneyBR(avg?.textContent);
+      map[code] = { price: Number.isFinite(price) ? price : NaN, qty: Number.isFinite(qty) ? qty : 0, avgPrice: Number.isFinite(avgPrice) ? avgPrice : NaN };
     });
     return map;
   }
@@ -958,7 +962,7 @@ function initEqualWeightPlanPanel() {
       if (!holdings || typeof holdings !== 'object' || Object.keys(holdings).length === 0) {
         ewBody.innerHTML = `
           <tr>
-            <td colspan="10" style="text-align: center; padding: 20px; color: #6b7280; font-style: italic;">
+            <td colspan="11" style="text-align: center; padding: 20px; color: #6b7280; font-style: italic;">
               Sua carteira ainda não foi carregada. Por favor, clique no botão "Atualizar Minhas Ações" para fazer a leitura inicial.
             </td>
           </tr>
@@ -968,7 +972,7 @@ function initEqualWeightPlanPanel() {
 
       fetchTopNFromAPI((err, data) => {
         if (err) {
-          ewBody.innerHTML = `<tr><td colspan="10" style="text-align: center; padding: 20px; color: #c62828;">Erro ao buscar dados da API: ${err.message}</td></tr>`;
+          ewBody.innerHTML = `<tr><td colspan="11" style="text-align: center; padding: 20px; color: #c62828;">Erro ao buscar dados da API: ${err.message}</td></tr>`;
           return;
         }
         const normalized = normalizeChecklist(data);
@@ -980,8 +984,10 @@ function initEqualWeightPlanPanel() {
         } else { // 'investir'
           const investmentAmount = totalFromInput;
           const currentPortfolioTotal = Object.values(holdings).reduce((acc, stock) => {
-            if (stock && Number.isFinite(stock.price) && Number.isFinite(stock.qty)) {
-              return acc + (stock.price * stock.qty);
+            // Use cost basis (avgPrice * qty) for the calculation, as requested.
+            // If avgPrice is not available, it means it's not a holding, so its invested amount is 0.
+            if (stock && Number.isFinite(stock.avgPrice) && stock.avgPrice > 0 && Number.isFinite(stock.qty)) {
+              return acc + (stock.avgPrice * stock.qty);
             }
             return acc;
           }, 0);
@@ -992,16 +998,20 @@ function initEqualWeightPlanPanel() {
         ewBody.innerHTML = '';
         const computed = [];
         top.forEach((it) => {
-          const fromCache = holdings[it.code] || { price: NaN, qty: 0 };
+          const fromCache = holdings[it.code] || { price: NaN, qty: 0, avgPrice: NaN };
           const price = Number.isFinite(it.price) && it.price > 0 ? it.price : fromCache.price;
           const qty = Number.isFinite(fromCache.qty) ? fromCache.qty : 0;
-          const currentAmount = Number.isFinite(price) ? price * qty : NaN;
+          const avgPrice = fromCache.avgPrice;
+          const currentAmount = Number.isFinite(price) && price > 0 && qty > 0 ? price * qty : 0; // Market Value
+          const investedAmount = (Number.isFinite(avgPrice) && avgPrice > 0 && qty > 0) ? avgPrice * qty : 0; // Cost Basis
           computed.push({
             rank: it.rank,
             code: it.code,
             price,
             qty,
-            currentAmount,
+            avgPrice,
+            currentAmount, // For display
+            investedAmount, // For calculation
             targetPer,
           });
         });
@@ -1012,11 +1022,11 @@ function initEqualWeightPlanPanel() {
 
         if (ewMode === 'rebalancear') {
           const targetTotalCents = Number.isFinite(totalFromInput) && totalFromInput > 0 ? Math.round(totalFromInput * 100) : 0;
-          const sumBaseCents = computed.reduce((acc, row) => acc + (Number.isFinite(row.currentAmount) ? Math.round(row.currentAmount * 100) : 0), 0);
+          const sumBaseCents = computed.reduce((acc, row) => acc + (Number.isFinite(row.investedAmount) ? Math.round(row.investedAmount * 100) : 0), 0);
           budgetCents = Math.max(0, targetTotalCents - sumBaseCents);
           const items = computed.map((row) => {
             const priceCents = Number.isFinite(row.price) && row.price > 0 ? Math.round(row.price * 100) : 0;
-            const baseCents = Number.isFinite(row.currentAmount) ? Math.round(row.currentAmount * 100) : 0;
+            const baseCents = Number.isFinite(row.investedAmount) ? Math.round(row.investedAmount * 100) : 0;
             const targetCents = Number.isFinite(row.targetPer) ? Math.round(row.targetPer * 100) : 0;
             const targetQty = priceCents > 0 ? Math.floor(targetCents / priceCents) : 0;
             const baseQty = Number.isFinite(row.qty) ? row.qty : 0;
@@ -1067,7 +1077,7 @@ function initEqualWeightPlanPanel() {
         } else {
           const items = computed.map((row) => {
             const priceCents = Number.isFinite(row.price) && row.price > 0 ? Math.round(row.price * 100) : 0;
-            const baseCents = Number.isFinite(row.currentAmount) ? Math.round(row.currentAmount * 100) : 0;
+            const baseCents = Number.isFinite(row.investedAmount) ? Math.round(row.investedAmount * 100) : 0;
             const targetCents = Number.isFinite(row.targetPer) ? Math.round(row.targetPer * 100) : 0;
             const deficitCents = Math.max(0, targetCents - baseCents);
             return { code: row.code, rank: row.rank, priceCents, baseCents, targetCents, deficitCents, q: 0, spendCents: 0 };
@@ -1090,17 +1100,18 @@ function initEqualWeightPlanPanel() {
 
             let best = null;
             if (eligByDef.length) {
-              let bestRatio = -1;
+              // For 'investir' mode, prioritize the one with the largest absolute deficit to be more intuitive.
+              let bestDeficit = -1;
               for (const it of eligByDef) {
-                const ratio = it.deficitCents / it.priceCents;
                 if (
-                  ratio > bestRatio ||
-                  (Math.abs(ratio - bestRatio) < 1e-9 && (
+                  it.deficitCents > bestDeficit ||
+                  (it.deficitCents === bestDeficit && (
                     it.priceCents < (best?.priceCents ?? Number.MAX_SAFE_INTEGER) ||
                     (it.priceCents === (best?.priceCents ?? 0) && it.rank < (best?.rank ?? 1e9))
                   ))
                 ) {
-                  best = it; bestRatio = ratio;
+                  best = it;
+                  bestDeficit = it.deficitCents;
                 }
               }
             } else {
@@ -1134,7 +1145,7 @@ function initEqualWeightPlanPanel() {
         computed.forEach((row) => {
           const tr = document.createElement('tr');
           const cost = Number(spendMap[row.code] || 0);
-          const valueAfter = (Number.isFinite(row.currentAmount) ? row.currentAmount : 0) + cost;
+          const valueAfter = (Number.isFinite(row.investedAmount) ? row.investedAmount : 0) + cost;
           const faltaAfter = Number.isFinite(row.targetPer) ? Math.max(0, row.targetPer - valueAfter) : NaN;
           const qtyToBuy = Number(qtyMap[row.code] || 0);
           if (Number.isFinite(row.qty) && row.qty > 0) tr.classList.add('row-holding');
@@ -1142,10 +1153,11 @@ function initEqualWeightPlanPanel() {
             <td>${row.rank}</td>
             <td>${row.code}</td>
             <td class="num">${Number.isFinite(row.price) ? fmtBRL(row.price) : '<span class="muted">—</span>'}</td>
+            <td class="num">${Number.isFinite(row.avgPrice) ? fmtBRL(row.avgPrice) : '<span class="muted">—</span>'}</td>
             <td class="num">${Number.isFinite(row.qty) ? row.qty : '<span class="muted">—</span>'}</td>
-            <td class="num">${Number.isFinite(row.currentAmount) ? fmtBRL(row.currentAmount) : '<span class="muted">—</span>'}</td>
+            <td class="num">${row.qty > 0 ? fmtBRL(row.investedAmount) : '<span class="muted">—</span>'}</td>
             <td class="num">${Number.isFinite(row.targetPer) ? fmtBRL(row.targetPer) : '<span class="muted">—</span>'}</td>
-            <td class="num">${(Number.isFinite(row.currentAmount) || Number.isFinite(cost)) ? fmtBRL(valueAfter) : '<span class="muted">—</span>'}</td>
+            <td class="num">${(Number.isFinite(row.investedAmount) || Number.isFinite(cost)) ? fmtBRL(valueAfter) : '<span class="muted">—</span>'}</td>
             <td class="num">${Number.isFinite(faltaAfter) ? fmtBRL(faltaAfter) : '<span class="muted">—</span>'}</td>
             <td class="num">${qtyToBuy > 0 ? qtyToBuy : '<span class="muted">—</span>'}</td>
             <td class="num">${fmtBRL(cost)}</td>
@@ -1158,7 +1170,7 @@ function initEqualWeightPlanPanel() {
         remTr.innerHTML = `
           <td></td>
           <td><strong>Sobra</strong></td>
-          <td class="num" colspan="7"><span class="muted">—</span></td>
+          <td class="num" colspan="9"><span class="muted">—</span></td>
           <td class="num">${fmtBRL(remainder)}</td>
         `;
         ewBody.appendChild(remTr);
@@ -1203,6 +1215,12 @@ function initEqualWeightPlanPanel() {
       try {
         const holdings = readHoldingsFromPage();
         chrome.storage.local.set({ my_portfolio_holdings: holdings }, () => {
+          if (chrome.runtime.lastError) {
+            console.error('[StatusInvest Ext] Erro ao salvar no cache (contexto invalidado?):', chrome.runtime.lastError.message);
+            ewUpdateMyStocks.disabled = false;
+            ewUpdateMyStocks.textContent = originalText;
+            return;
+          }
           const tickers = Object.keys(holdings);
           console.log('[StatusInvest Ext] Ações da carteira salvas:', tickers);
           ewUpdateMyStocks.textContent = `Carteira salva (${tickers.length} ativos)!`;

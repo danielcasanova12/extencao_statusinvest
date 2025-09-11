@@ -7,13 +7,6 @@
 let pool;
 let lastCsvCache = null; // cache volátil
 
-const EXCLUSION_LIST = new Set([
-  'ITUB4', 'BPAC11', 'BBDC3', 'BBAS3', 'ITSA4', 'SANB11', 'B3SA3', 'BBSE3',
-  'CXSE3', 'PSSA3', 'MULT3', 'ALOS3', 'BPAN4', 'BNBR3', 'BRAP4', 'ABCB4',
-  'IGTA3', 'BRSR6', 'BMEB4', 'BAZA3', 'BSLI3', 'PLPL3', 'BEES3', 'BMGB4',
-  'LOGG3', 'PINE4', 'WIZC3', 'BPAR3', 'SYNE3'
-]);
-
 function setCors(_req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -209,7 +202,6 @@ function normalizeAndCompute(parsed, env) {
   const CHECK_MIN = Number(process.env.MF_CHECKLIST_MIN || (env && env.MF_CHECKLIST_MIN) || 0);
 
   const filtered = rows.filter((x) => {
-    if (EXCLUSION_LIST.has(x.ticker)) return false;
     if (x.market_cap == null || x.market_cap < 90000000) return false;
     if (x.liquidez == null || x.liquidez < LIQ_MIN) return false;
     if (x.ebit == null || x.ebit <= 1) return false;
