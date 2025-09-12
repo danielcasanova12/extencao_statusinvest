@@ -252,7 +252,10 @@
       chrome.runtime.sendMessage({ type: 'FETCH_FM_LAST_UPDATED' }, (lu) => {
         if (lu && lu.ok && lu.json) {
           const ts = lu.json.last_updated || lu.json.generated_at;
-          if (ts) placeLastUpdatedIndicator(ts);
+          if (ts) {
+            placeLastUpdatedIndicator(ts);
+            showOutdatedDataAlert(ts);
+          }
         } else {
           console.warn('[content] fm-last-updated request failed:', lu?.error || 'unknown');
         }
@@ -272,11 +275,128 @@
     });
   }
 
+  const OUTDATED_ALERT_STORAGE_KEY = 'outdated_alert_last_shown';
+  const OUTDATED_ALERT_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+
+  function showOutdatedDataAlert(isoTs) {
+    if (!isoTs) return;
+
+    const date = new Date(isoTs);
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const startOfDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    const diffTime = startOfToday - startOfDate;
+    const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+
+    if (diffDays < 30) {
+      return; // Data is not outdated, do nothing.
+    }
+
+    chrome.storage.local.get([OUTDATED_ALERT_STORAGE_KEY], (result) => {
+      if (chrome.runtime.lastError) {
+        console.error('[StatusInvest Ext] Error getting storage:', chrome.runtime.lastError);
+        return;
+      }
+      const lastShown = result[OUTDATED_ALERT_STORAGE_KEY];
+      const nowMs = Date.now();
+
+      if (lastShown && (nowMs - lastShown < OUTDATED_ALERT_INTERVAL_MS)) {
+        // Alert was shown recently, do nothing.
+        return;
+      }
+
+      // Time to show the alert.
+      const alertId = 'fm-outdated-data-alert';
+      if (document.getElementById(alertId)) return; // Already visible
+
+      const alertDiv = document.createElement('div');
+      alertDiv.id = alertId;
+      Object.assign(alertDiv.style, {
+        position: 'fixed',
+        top: '20px',
+        right: '20px',
+        backgroundColor: '#c62828',
+        color: 'white',
+        padding: '16px',
+        borderRadius: '8px',
+        boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
+        zIndex: '99999',
+        maxWidth: '380px',
+        fontFamily: 'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif',
+        fontSize: '14px',
+        lineHeight: '1.5',
+      });
+
+      const message = document.createElement('p');
+      message.textContent = "Seus dados estão desatualizados há mais de 30 dias. Para garantir a precisão da análise, baixe o novo CSV do StatusInvest e execute o processo 'TODOS' na extensão.";
+      message.style.margin = '0';
+      message.style.paddingRight = '20px'; // space for close button
+
+      const closeButton = document.createElement('button');
+      closeButton.innerHTML = '&times;'; // Use a multiplication sign for 'X'
+      Object.assign(closeButton.style, { position: 'absolute', top: '8px', right: '10px', background: 'transparent', border: 'none', color: 'white', cursor: 'pointer', fontSize: '20px', fontWeight: 'bold', padding: '0', lineHeight: '1', opacity: '0.8' });
+      closeButton.onmouseover = () => { closeButton.style.opacity = '1'; };
+      closeButton.onmouseout = () => { closeButton.style.opacity = '0.8'; };
+      closeButton.onclick = () => { alertDiv.remove(); };
+
+      alertDiv.appendChild(message);
+      alertDiv.appendChild(closeButton);
+      document.body.appendChild(alertDiv);
+
+      // Update the timestamp in storage.
+      chrome.storage.local.set({ [OUTDATED_ALERT_STORAGE_KEY]: nowMs });
+    });
+  }
+
   let headerIndicatorTries = 0;
   function placeLastUpdatedIndicator(isoTs) {
     try {
       const id = 'fm-last-updated-indicator';
-      const text = `Atualizado: ${formatBrazil(isoTs)}`;
+      if (!isoTs) return; // Don't show if no date
+
+      // --- Start of color logic ---
+      const date = new Date(isoTs);
+      const now = new Date();
+      const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const startOfDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+      const diffTime = startOfToday - startOfDate;
+      const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+
+      let bgColor = '';
+      let textColor = '#777';
+      let fontWeight = '400';
+      let additionalText = '';
+
+      if (diffDays >= 30) {
+        // Red: 30+ days old
+        bgColor = '#ffebee';
+        textColor = '#c62828';
+        fontWeight = '700';
+        additionalText = ' (Atualizar dados!)';
+      } else if (diffDays >= 15) {
+        // Yellow: 15-29 days old
+        bgColor = '#fff7ed';
+        textColor = '#92400e';
+        fontWeight = '500';
+      } else {
+        // Green: up to 14 days old
+        bgColor = '#e8f5e9';
+        textColor = '#2e7d32';
+      }
+
+      const text = `Atualizado: ${formatBrazil(isoTs)}${additionalText}`;
+      
+      const applyStyles = (el) => {
+        if (!el) return;
+        el.style.fontWeight = fontWeight;
+        el.style.color = textColor;
+        el.style.backgroundColor = bgColor;
+        el.style.padding = '2px 6px';
+        el.style.borderRadius = '4px';
+        el.textContent = `• ${text}`;
+      };
+      // --- End of color logic ---
+
       let placed = false;
 
       // 1) Preferir adicionar como uma "coluna" dentro do container do título AÇÕES
@@ -286,22 +406,18 @@
         if (!wrapper) {
           wrapper = document.createElement('div');
           wrapper.id = id;
-          // Mantém alinhamento como uma coluna do flex container
           wrapper.style.display = 'flex';
           wrapper.style.alignItems = 'center';
           wrapper.style.marginLeft = '12px';
 
           const label = document.createElement('small');
-          label.style.fontWeight = '400';
-          label.style.color = '#777';
-          label.textContent = `• ${text}`;
+          applyStyles(label);
           wrapper.appendChild(label);
 
           acoesContainer.appendChild(wrapper);
         } else {
-          // atualiza o texto do primeiro child
           const lbl = wrapper.firstChild || document.createElement('small');
-          lbl.textContent = `• ${text}`;
+          applyStyles(lbl);
           if (!wrapper.firstChild) wrapper.appendChild(lbl);
         }
         placed = true;
@@ -317,14 +433,12 @@
             wrapper.style.alignItems = 'center';
             wrapper.style.marginLeft = '12px';
             const label = document.createElement('small');
-            label.style.fontWeight = '400';
-            label.style.color = '#777';
-            label.textContent = `• ${text}`;
+            applyStyles(label);
             wrapper.appendChild(label);
             headerRoot.appendChild(wrapper);
           } else {
             const lbl = wrapper.firstChild || document.createElement('small');
-            lbl.textContent = `• ${text}`;
+            applyStyles(lbl);
             if (!wrapper.firstChild) wrapper.appendChild(lbl);
           }
           placed = true;
@@ -337,14 +451,12 @@
               node = document.createElement('small');
               node.id = id;
               node.style.marginLeft = '8px';
-              node.style.fontWeight = '400';
-              node.style.color = '#777';
-              node.style.display = 'block';
+              node.style.display = 'inline-block';
               node.style.marginTop = '2px';
-              node.textContent = `• ${text}`;
+              applyStyles(node);
               acoesDiv.appendChild(node);
             } else {
-              node.textContent = `• ${text}`;
+              applyStyles(node);
             }
             placed = true;
           }
@@ -360,13 +472,11 @@
             node = document.createElement('small');
             node.id = id;
             node.style.marginLeft = '8px';
-            node.style.fontWeight = '400';
-            node.style.color = '#777';
             node.style.display = 'inline-block';
-            node.textContent = `• ${text}`;
+            applyStyles(node);
             anchor.insertAdjacentElement('afterend', node);
           } else {
-            node.textContent = `• ${text}`;
+            applyStyles(node);
           }
           placed = true;
         }
@@ -977,20 +1087,23 @@ function initEqualWeightPlanPanel() {
         }
         const normalized = normalizeChecklist(data);
         const top = normalized.slice(0, N);
+        const topTickers = new Set(top.map(t => t.code));
 
         let targetPer = 0;
         if (ewMode === 'rebalancear') {
           targetPer = Number.isFinite(totalFromInput) && totalFromInput > 0 ? totalFromInput / N : 0;
         } else { // 'investir'
           const investmentAmount = totalFromInput;
-          const currentPortfolioTotal = Object.values(holdings).reduce((acc, stock) => {
-            // Use cost basis (avgPrice * qty) for the calculation, as requested.
-            // If avgPrice is not available, it means it's not a holding, so its invested amount is 0.
-            if (stock && Number.isFinite(stock.avgPrice) && stock.avgPrice > 0 && Number.isFinite(stock.qty)) {
-              return acc + (stock.avgPrice * stock.qty);
-            }
-            return acc;
-          }, 0);
+          // Consider only the cost basis of assets that are in the Top N list, not the whole portfolio.
+          // This makes the 'target per asset' calculation more intuitive for the user.
+          const currentPortfolioTotal = Object.entries(holdings)
+            .filter(([ticker, _]) => topTickers.has(ticker))
+            .reduce((acc, [_, stock]) => {
+              if (stock && Number.isFinite(stock.avgPrice) && stock.avgPrice > 0 && Number.isFinite(stock.qty)) {
+                return acc + (stock.avgPrice * stock.qty);
+              }
+              return acc;
+            }, 0);
           const finalPortfolioTotal = currentPortfolioTotal + (Number.isFinite(investmentAmount) ? investmentAmount : 0);
           targetPer = finalPortfolioTotal > 0 ? finalPortfolioTotal / N : 0;
         }

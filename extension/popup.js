@@ -393,9 +393,9 @@
       }
 
       if (tipo === 'inv10fm') {
-        setStatus('Gerando ranking com base no Investidor10 (≥6)...');
+        setStatus('Gerando ranking com base no Investidor10 (≥4)...');
         try {
-          chrome.runtime.sendMessage({ type: 'FM_FROM_INV10', min_true: 6 }, (resp) => {
+          chrome.runtime.sendMessage({ type: 'FM_FROM_INV10', min_true: 4 }, (resp) => {
             if (resp && resp.ok) {
               const p = resp.json && (resp.json.processed || 0);
               setStatus('Ranking Inv10+FM concluído. Registros: ' + p);

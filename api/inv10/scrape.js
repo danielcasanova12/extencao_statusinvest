@@ -92,17 +92,48 @@ async function scrapeOne(tkr) {
 
   const checks = {};
   let trueCount = 0;
-  // Preferir .checklist-item, mas aceitar qualquer input.styled-checkbox na página
-  const inputs = $('.checklist-item input.styled-checkbox').toArray();
-  const fallbacks = inputs.length ? [] : $('input.styled-checkbox').toArray();
-  const nodes = inputs.length ? inputs : fallbacks;
-  for (const el of nodes) {
-    const id = $(el).attr('id') || $(el).attr('name') || '';
-    if (!id) continue;
-    const checked = $(el).is(':checked') || $(el).attr('checked') != null;
-    checks[id] = { checked };
-    if (checked) trueCount += 1;
-  }
+
+  // The specific checklist items to count, as requested.
+  const TARGET_CHECKS = new Set([
+    'Empresa nunca deu prejuízo (ano fiscal)',
+    'Empresa com lucro nos últimos 20 trimestres (5 anos)',
+    'Empresa possui dívida menor que patrimônio',
+    'Empresa apresentou crescimento de receita nos últimos 5 anos',
+    'Empresa apresentou crescimento de lucros nos últimos 5 anos',
+    'Empresa com mais de 5 anos de Bolsa',
+  ]);
+
+  // Iterate over each checklist item on the page to get its text and checked status.
+  $('.checklist-item').each((_, element) => {
+    const item = $(element);
+    const input = item.find('input.styled-checkbox');
+    if (!input.length) {
+      return; // Skip if no checkbox found inside
+    }
+
+    const id = input.attr('id') || input.attr('name') || '';
+    const checked = input.is(':checked') || input.attr('checked') != null;
+    const text = item.text().trim();
+
+    // Store all checklist items found in the `checks` JSONB for reference.
+    if (id) {
+      checks[id] = { checked };
+    }
+
+    // Check if the item's text matches one of the targets.
+    let isTarget = false;
+    for (const targetText of TARGET_CHECKS) {
+      if (text.startsWith(targetText)) {
+        isTarget = true;
+        break;
+      }
+    }
+
+    // If it's a target item and it's checked, increment the special count.
+    if (isTarget && checked) {
+      trueCount += 1;
+    }
+  });
 
   const item = {
     acao,

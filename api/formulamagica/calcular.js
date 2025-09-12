@@ -87,11 +87,18 @@ function tickerBase(t) {
   return m ? m[0] : s;
 }
 
+const FINANCIAL_EXCLUSION_LIST = new Set([
+  'ITUB4', 'BPAC11', 'BBDC3', 'BBAS3', 'ITSA4', 'SANB11', 'B3SA3', 'BBSE3',
+  'CXSE3', 'PSSA3', 'MULT3', 'ALOS3', 'BPAN4', 'BNBR3', 'BRAP4', 'ABCB4',
+  'IGTA3', 'BRSR6', 'BMEB4', 'BAZA3', 'BSLI3', 'PLPL3', 'BEES3', 'BMGB4',
+  'LOGG3', 'PINE4', 'WIZC3', 'BPAR3', 'SYNE3'
+]);
+
 function isFinancial(row) {
   const sector = toLower(row.sector || row.setor || row.segmento || row.subsetor);
   if (/(banco|financeir|seguro|insur|financial|bank)/i.test(sector)) return true;
   const t = toCode(row.ticker);
-  return /^(ITUB|BBDC|SANB|BBAS|BRSR|ABCB|BPAN|SAFG|SULA|PSSA|BBSE|IRBR|BRPR|SULA|SSBR)/.test(t);
+  return FINANCIAL_EXCLUSION_LIST.has(t);
 }
 
 function computeEY(row, cols) {
