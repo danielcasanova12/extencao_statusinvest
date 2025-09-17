@@ -1115,9 +1115,11 @@
             </label>
             <label>Top
               <select id="ewN">
+                <option value="5">5</option>
                 <option value="10" selected>10</option>
                 <option value="15">15</option>
                 <option value="20">20</option>
+                <option value="30">30</option>
               </select>
             </label>
             <label>Total (R$)
@@ -1217,10 +1219,8 @@
 
     function csvEscape(value) {
       if (value == null) return '';
-      const str = String(value).replace(/?
-/g, ' ').trim();
-      if (/[";
-]/.test(str)) return '"' + str.replace(/"/g, '""') + '"';
+      const str = String(value).replace(/\r?\n/g, ' ').trim();
+      if (/[";\r\n]/.test(str)) return '"' + str.replace(/"/g, '""') + '"';
       return str;
     }
 
@@ -1245,8 +1245,7 @@
           lines.push(cells.join(';'));
         });
       });
-      return lines.join('
-');
+      return lines.join('\n');
     }
 
     function downloadCsv(content, filename) {
