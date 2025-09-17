@@ -148,6 +148,14 @@
     try { return n.toLocaleString('pt-BR', { style:'currency', currency:'BRL' }); }
     catch { return `R$ ${n.toFixed(2)}`; }
   }
+  function fmtNumberBR(n) {
+    if (n == null || !Number.isFinite(n)) return '0,00';
+    try {
+      return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    } catch {
+      return n.toFixed(2).replace('.', ',');
+    }
+  }
 
   function getPortfolioCostBasis() {
     let sum = 0;
@@ -254,19 +262,16 @@
 
       if (rank == null || Number.isNaN(rank)) {
         fmCell.textContent = '-';
-        // whole square red when no data
-        fmCell.style.backgroundColor = '#ffebee';
+        // No data: red text
         fmCell.style.color = '#c62828';
         fmCell.style.fontWeight = '700';
       } else if (Number(rank) <= 20) {
         fmCell.textContent = String(rank);
         fmCell.style.color = '#03ab95'; // green text
-        fmCell.style.backgroundColor = '#e6f7f5'; // subtle green background
         fmCell.style.fontWeight = '700';
       } else {
         fmCell.textContent = String(rank);
         fmCell.style.color = '#c62828'; // red text
-        fmCell.style.backgroundColor = '#ffebee'; // red background
         fmCell.style.fontWeight = '700';
       }
     }
@@ -629,34 +634,56 @@
   function setShowAllOnPagination() {
     return new Promise((resolve, reject) => {
       try {
-        // 1. Expand all collapsed sections to ensure their content is visible and interactive.
-        document.querySelectorAll('li.group:not(.active) .collapsible-header').forEach(header => {
+        // 1. Find the "AÇÕES" group.
+        let acoesGroup = null;
+        // Use a more specific selector for the "AÇÕES" header
+        const acoesH3 = document.querySelector('.collapsible-header h3.text-category-1');
+        if (acoesH3) {
+          acoesGroup = acoesH3.closest('li.group');
+        }
+
+        if (!acoesGroup) {
+          console.warn('[StatusInvest Ext] "AÇÕES" group not found. Cannot set pagination to "TODOS".');
+          resolve();
+          return;
+        }
+
+        // 2. Expand it if it's not active.
+        if (!acoesGroup.classList.contains('active')) {
+          const header = acoesGroup.querySelector('.collapsible-header');
           if (header) header.click();
-        });
+        }
   
-        // 2. Wait for sections to expand and for the DOM to update.
+        // 3. Wait for animations and DOM updates.
         setTimeout(() => {
           try {
-            // 3. Find all pagination controls and set them to "TODOS".
-            document.querySelectorAll('.pagination-control').forEach(control => {
+            // 4. Find the pagination control within the "AÇÕES" group and set it to "TODOS".
+            const control = acoesGroup.querySelector('.pagination-control');
+            if (control) {
               const selectElement = control.querySelector('select[data-formselect]');
-              if (!selectElement || selectElement.value === '-1') return;
-  
-              const dropdownInput = control.querySelector('input.select-dropdown');
-              if (!dropdownInput) return;
-  
-              const dropdownId = dropdownInput.dataset.target;
-              if (!dropdownId) return;
-              
-              const dropdownUl = document.getElementById(dropdownId);
-              if (!dropdownUl) return;
-  
-              const todosLi = Array.from(dropdownUl.querySelectorAll('li > span'))
-                                   .find(span => span.textContent.trim().toUpperCase() === 'TODOS')
-                                   ?.parentElement;
-  
-              if (todosLi && !todosLi.classList.contains('selected')) todosLi.click();
-            });
+              // Check if "TODOS" is not already selected. The value for TODOS is -1.
+              if (selectElement && selectElement.value !== '-1') {
+                // This is a Materialize CSS dropdown. We need to find the generated <ul> and click the <li>.
+                const dropdownInput = control.querySelector('input.select-dropdown');
+                if (dropdownInput) {
+                  const dropdownId = dropdownInput.dataset.target;
+                  if (dropdownId) {
+                    const dropdownUl = document.getElementById(dropdownId);
+                    if (dropdownUl) {
+                      const todosLi = Array.from(dropdownUl.querySelectorAll('li > span'))
+                                           .find(span => span.textContent.trim().toUpperCase() === 'TODOS')
+                                           ?.parentElement;
+                      // Click if it exists and is not already selected
+                      if (todosLi && !todosLi.classList.contains('selected')) {
+                        todosLi.click();
+                      }
+                    }
+                  }
+                }
+              }
+            } else {
+              console.warn('[StatusInvest Ext] Pagination control for "AÇÕES" not found inside its group.');
+            }
             resolve(); // Promise resolves successfully
           } catch (e) { reject(e); }
         }, 1000); // Wait 1s for animations
@@ -1067,8 +1094,12 @@
         .num { text-align:right; }
         .muted { color:#6b7280; }
         /* Highlight rows for tickers already in the portfolio */
+        .header.sell-header { background-color: #03ab95; }
         tr.row-holding td { background:#e6f7f5; }
         tr.row-holding td:nth-child(2) { color:#03ab95; font-weight:700; }
+        tr.row-sell-selected { background-color: #03ab95; color: white; }
+        tr.row-sell-selected .muted { color: #f0fdfa; }
+        .table-wrap.no-scroll { max-height: none; overflow: visible; }
         .mode { display:flex; align-items:center; gap:6px; }
         .mode label { display:flex; align-items:center; gap:4px; cursor:pointer; }
       </style>
@@ -1097,6 +1128,7 @@
               <label title="Ajusta quantidades para chegar ao alvo por ativo; só considera compras adicionais."><input type="radio" name="ewMode" value="rebalancear" /> Rebalancear</label>
             </span>
             <button id="ewUpdateMyStocks" class="toggle-btn" type="button" title="Exibe todos os ativos e salva a lista da sua carteira para uso nos cálculos.">Atualizar Minhas Ações</button>
+            <button id="ewExportCsv" class="toggle-btn" type="button" title="Baixar tabela em CSV.">Exportar CSV</button>
             <button id="ewToggle" class="toggle-btn" type="button">Ocultar</button>
           </div>
         </div>
@@ -1122,6 +1154,30 @@
             </table>
           </div>
         </div>
+        <div class="header sell-header" id="ewSellHeader" style="margin-top: 16px; display: none;">
+          <h3 class="title">Plano de Venda (Ativos Fora do Top N)</h3>
+          <div class="controls">
+            <label style="color:white; font-size:12px; display:flex; align-items:center; gap:4px; cursor:pointer;"><input type="checkbox" id="ewSellShowCurrency"> Mostrar R$</label>
+            <button id="ewSellExportCsv" class="toggle-btn" type="button" title="Baixar lista em CSV.">Exportar CSV</button>
+            <button id="ewSellToggle" class="toggle-btn" type="button">Ocultar</button>
+          </div>
+        </div>
+        <div class="body" id="ewSellBodyWrap" style="display: none;">
+            <div class="table-wrap no-scroll">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Ticker</th>
+                            <th class="num">Qtd atual</th>
+                            <th class="num">Preço</th>
+                            <th class="num">Valor total</th>
+                            <th class="num" style="text-align:center; width:50px;"><input type="checkbox" id="ewSellSelectAll" title="Selecionar Todos"></th>
+                        </tr>
+                    </thead>
+                    <tbody id="ewSellBody"></tbody>
+                </table>
+            </div>
+        </div>
       </div>
     `;
     root.appendChild(wrap);
@@ -1134,6 +1190,14 @@
     const ewBodyWrap = $('#ewBodyWrap');
     const ewToggle = $('#ewToggle');
     const ewUpdateMyStocks = $('#ewUpdateMyStocks');
+    const ewExportCsv = $('#ewExportCsv');
+
+    const ewSellHeader = $('#ewSellHeader');
+    const ewSellBodyWrap = $('#ewSellBodyWrap');
+    const ewSellToggle = $('#ewSellToggle');
+    const ewSellExportCsv = $('#ewSellExportCsv');
+    const ewSellShowCurrency = $('#ewSellShowCurrency');
+
     const ewModeInputs = root.querySelectorAll('input[name="ewMode"]');
     let ewMode = 'investir';
     let ewSourceValue = 'fm';
@@ -1143,24 +1207,68 @@
     function saveMode(v) { return new Promise((resolve) => { try { chrome.storage.sync.set({ [MODE_KEY]: v }, () => resolve()); } catch { resolve(); } }); }
     function loadSource() { return new Promise((resolve) => { try { chrome.storage.sync.get([SOURCE_KEY], (r) => resolve(r?.[SOURCE_KEY] || 'fm')); } catch { resolve('fm'); } }); }
     function saveSource(v) { return new Promise((resolve) => { try { chrome.storage.sync.set({ [SOURCE_KEY]: v }, () => resolve()); } catch { resolve(); } }); }
+
+    const SELL_CURRENCY_KEY = 'ew_sell_plan_show_currency';
+    function loadSellCurrency() { return new Promise((resolve) => { try { chrome.storage.sync.get([SELL_CURRENCY_KEY], (r) => resolve(Boolean(r?.[SELL_CURRENCY_KEY]))); } catch { resolve(false); } }); }
+    function saveSellCurrency(v) { return new Promise((resolve) => { try { chrome.storage.sync.set({ [SELL_CURRENCY_KEY]: Boolean(v) }, () => resolve()); } catch { resolve(); } }); }
     
+    // Utils are now global
   
-    // Utils (pt-BR parsing/formatting)
-    function parseMoneyBR(text) {
-      if (text == null) return NaN;
-      let s = String(text).replace(/R\$|\s/g, '');
-      s = s.replace(/\./g, '').replace(/,/g, '.');
-      const n = Number(s);
-      return Number.isFinite(n) ? n : NaN;
+
+    function csvEscape(value) {
+      if (value == null) return '';
+      const str = String(value).replace(/?
+/g, ' ').trim();
+      if (/[";
+]/.test(str)) return '"' + str.replace(/"/g, '""') + '"';
+      return str;
     }
-    function parseIntBR(text) {
-      if (text == null) return NaN;
-      const s = String(text).replace(/\./g, '').replace(/\s/g, '');
-      const n = parseInt(s, 10);
-      return Number.isFinite(n) ? n : NaN;
+
+    function cellTextForCsv(cell) {
+      if (!cell) return '';
+      const checkbox = cell.querySelector('input[type="checkbox"]');
+      if (checkbox) return checkbox.checked ? 'Sim' : 'Nao';
+      return (cell.textContent || '').replace(/\s+/g, ' ').trim();
     }
-    function fmtBRL(n) { try { return n.toLocaleString('pt-BR', { style:'currency', currency:'BRL' }); } catch { return `R$ ${n.toFixed(2)}`; } }
-  
+
+    function serializeTableToCsv(table) {
+      if (!table) return '';
+      const lines = [];
+      const sections = [];
+      if (table.tHead) sections.push(table.tHead);
+      if (table.tBodies) sections.push(...Array.from(table.tBodies));
+      if (table.tFoot) sections.push(table.tFoot);
+      sections.forEach((section) => {
+        if (!section) return;
+        Array.from(section.rows).forEach((row) => {
+          const cells = Array.from(row.cells).map((cell) => csvEscape(cellTextForCsv(cell)));
+          lines.push(cells.join(';'));
+        });
+      });
+      return lines.join('
+');
+    }
+
+    function downloadCsv(content, filename) {
+      if (!content) return;
+      const blob = new Blob(['﻿' + content], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    function timestampSuffix() {
+      const now = new Date();
+      const pad = (n) => String(n).padStart(2, '0');
+      return now.getFullYear() + pad(now.getMonth() + 1) + pad(now.getDate()) + '-' + pad(now.getHours()) + pad(now.getMinutes()) + pad(now.getSeconds());
+    }
+
     // Prefer the FIRST value shown in the page header (sensitive-field fw-600)
     function detectFirstSensitiveTotal() {
       const el = document.querySelector('span.sensitive-field.fw-600');
@@ -1198,9 +1306,10 @@
       return sum;
     }
   
-    function readHoldingsFromPage() {
+    function readHoldingsFromPage(rootEl) {
+      const scope = rootEl && typeof rootEl.querySelectorAll === 'function' ? rootEl : document;
       const map = Object.create(null);
-      document.querySelectorAll('tbody.list tr.item').forEach((r) => {
+      scope.querySelectorAll('tbody.list tr.item').forEach((r) => {
         const codeTd = r.querySelector('td[data-key="code"]');
         const code = (codeTd?.getAttribute('title') || codeTd?.textContent || '').trim().toUpperCase();
         if (!code) return;
@@ -1456,14 +1565,184 @@
           remTr.innerHTML = `
             <td></td>
             <td><strong>Sobra</strong></td>
-            <td class="num" colspan="9"><span class="muted">—</span></td>
+            <td class="num" colspan="8"><span class="muted">—</span></td>
             <td class="num">${fmtBRL(remainder)}</td>
           `;
           ewBody.appendChild(remTr);
+
+          // --- SELL PLAN LOGIC ---
+          const ewSellBody = $('#ewSellBody');
+          ewSellBody.innerHTML = '';
+
+          const stocksToSell = [];
+          for (const ticker in holdings) {
+            if (holdings[ticker] && holdings[ticker].qty > 0 && !topTickers.has(ticker)) {
+              const stock = holdings[ticker];
+              stocksToSell.push({
+                code: ticker,
+                qty: stock.qty,
+                price: stock.price,
+                totalValue: (Number.isFinite(stock.price) && Number.isFinite(stock.qty)) ? stock.price * stock.qty : 0,
+              });
+            }
+          }
+
+          if (stocksToSell.length > 0) {
+            ewSellHeader.style.display = 'flex';
+            // Visibility of ewSellBodyWrap is controlled by its own collapse logic
+            const showCurrency = ewSellShowCurrency.checked;
+            const priceFormatter = showCurrency ? fmtBRL : fmtNumberBR;
+
+            stocksToSell.sort((a, b) => b.totalValue - a.totalValue);
+            let totalSellValue = 0;
+            stocksToSell.forEach(stock => {
+              const tr = document.createElement('tr');
+              tr.innerHTML = `
+                <td>${stock.code}F</td>
+                <td class="num">${stock.qty}</td>
+                <td class="num">${Number.isFinite(stock.price) ? priceFormatter(stock.price) : '<span class="muted">—</span>'}</td>
+                <td class="num">${Number.isFinite(stock.totalValue) ? fmtBRL(stock.totalValue) : '<span class="muted">—</span>'}</td>
+                <td class="num" style="text-align:center;"><input type="checkbox" class="ew-sell-checkbox" data-ticker="${stock.code}"></td>
+              `;
+              ewSellBody.appendChild(tr);
+              if (Number.isFinite(stock.totalValue)) totalSellValue += stock.totalValue;
+            });
+            const totalTr = document.createElement('tr');
+            totalTr.style.fontWeight = 'bold';
+            totalTr.style.borderTop = '2px solid #d1d5db';
+            totalTr.innerHTML = `<td colspan="3">Valor Total a Vender</td><td class="num" id="ewSellTotalValue">${fmtBRL(totalSellValue)}</td><td></td>`;
+            ewSellBody.appendChild(totalTr);
+          } else {
+            ewSellHeader.style.display = 'none';
+            ewSellBodyWrap.style.display = 'none';
+          }
+          // --- END OF SELL PLAN LOGIC ---
         });
       });
     }
+
+    // --- Sell Plan Collapse Logic ---
+    const SELL_COLLAPSE_KEY = 'ew_sell_plan_collapsed';
+    function loadSellCollapsed() { return new Promise((resolve) => { try { chrome.storage.sync.get([SELL_COLLAPSE_KEY], (r) => resolve(Boolean(r?.[SELL_COLLAPSE_KEY]))); } catch { resolve(false); } }); }
+    function saveSellCollapsed(v) { return new Promise((resolve) => { try { chrome.storage.sync.set({ [SELL_COLLAPSE_KEY]: Boolean(v) }, () => resolve()); } catch { resolve(); } }); }
   
+    function applySellCollapseState(collapsed) {
+      if (!ewSellBodyWrap || !ewSellToggle) return;
+      ewSellBodyWrap.style.display = collapsed ? 'none' : 'block';
+      ewSellToggle.textContent = collapsed ? 'Mostrar' : 'Ocultar';
+    }
+  
+    ewSellShowCurrency.addEventListener('change', async () => {
+      await saveSellCurrency(ewSellShowCurrency.checked);
+      recompute();
+    });
+
+    ewSellToggle.addEventListener('click', async () => {
+      const nowCollapsed = ewSellBodyWrap.style.display !== 'none' ? true : false;
+      applySellCollapseState(nowCollapsed);
+      await saveSellCollapsed(nowCollapsed);
+    });
+
+    // Load initial state for sell plan collapse
+    // Event listener for row selection in the sell plan
+    const ewSellBody = $('#ewSellBody');
+    if (ewSellBody) {
+      ewSellBody.addEventListener('change', (e) => {
+        if (e.target.matches('.ew-sell-checkbox')) {
+          const tr = e.target.closest('tr');
+          if (tr) {
+            tr.classList.toggle('row-sell-selected', e.target.checked);
+          }
+          updateSellTotal();
+        }
+      });
+    }
+
+    // Event listener for "select all" in the sell plan
+    const ewSellSelectAll = $('#ewSellSelectAll');
+    if (ewSellSelectAll) {
+      ewSellSelectAll.addEventListener('change', (e) => {
+        const isChecked = e.target.checked;
+        ewSellBody.querySelectorAll('.ew-sell-checkbox').forEach(chk => {
+          chk.checked = isChecked;
+          const tr = chk.closest('tr');
+          if (tr) tr.classList.toggle('row-sell-selected', isChecked);
+        });
+        updateSellTotal();
+      });
+    }
+  
+    function updateSellTotal() {
+      const ewSellBody = $('#ewSellBody');
+      if (!ewSellBody) return;
+
+      const totalValueCell = $('#ewSellTotalValue');
+      if (!totalValueCell) return;
+
+      const allCheckboxes = ewSellBody.querySelectorAll('.ew-sell-checkbox');
+      const selectedCheckboxes = ewSellBody.querySelectorAll('.ew-sell-checkbox:checked');
+
+      let rowsToSum;
+      if (selectedCheckboxes.length > 0) {
+        rowsToSum = Array.from(selectedCheckboxes).map(chk => chk.closest('tr'));
+      } else {
+        rowsToSum = Array.from(allCheckboxes).map(chk => chk.closest('tr'));
+      }
+
+      let newTotal = 0;
+      rowsToSum.forEach(tr => {
+        if (!tr) return;
+        const valueCell = tr.cells[3];
+        if (valueCell) {
+          const value = parseMoneyBR(valueCell.textContent);
+          if (Number.isFinite(value)) newTotal += value;
+        }
+      });
+      totalValueCell.textContent = fmtBRL(newTotal);
+    }
+
+    if (ewExportCsv) {
+      ewExportCsv.addEventListener('click', () => {
+        const planTable = ewBody ? ewBody.closest('table') : null;
+        if (!planTable) {
+          alert('Tabela do plano nao encontrada.');
+          return;
+        }
+        const planRows = ewBody ? Array.from(ewBody.querySelectorAll('tr')).filter((tr) => tr.querySelectorAll('td').length >= 11) : [];
+        if (planRows.length === 0) {
+          alert('Nenhum dado disponivel para exportar. Atualize suas acoes.');
+          return;
+        }
+        const csv = serializeTableToCsv(planTable);
+        if (!csv) {
+          alert('Nao foi possivel gerar o arquivo CSV.');
+          return;
+        }
+        downloadCsv(csv, 'plano-equal-weight-' + timestampSuffix() + '.csv');
+      });
+    }
+
+    if (ewSellExportCsv) {
+      ewSellExportCsv.addEventListener('click', () => {
+        const sellTable = ewSellBody ? ewSellBody.closest('table') : null;
+        if (!sellTable) {
+          alert('Tabela de vendas nao encontrada.');
+          return;
+        }
+        const sellRows = ewSellBody ? Array.from(ewSellBody.querySelectorAll('tr')).filter((tr) => tr.querySelectorAll('td').length >= 5) : [];
+        if (sellRows.length === 0) {
+          alert('Nenhum ativo fora do Top N para exportar.');
+          return;
+        }
+        const csv = serializeTableToCsv(sellTable);
+        if (!csv) {
+          alert('Nao foi possivel gerar o arquivo CSV.');
+          return;
+        }
+        downloadCsv(csv, 'plano-venda-' + timestampSuffix() + '.csv');
+      });
+    }
+
     // Prefill total with detected portfolio total
     const first = detectFirstSensitiveTotal();
     const detected = Number.isFinite(first) && first > 0 ? first : detectPortfolioTotal();
@@ -1499,7 +1778,18 @@
       // Aguarda a página atualizar a lista de ativos
       setTimeout(() => {
         try {
-          const holdings = readHoldingsFromPage();
+          // Find the "AÇÕES" group to use as a context for reading holdings
+          let acoesGroup = null;
+          const groups = document.querySelectorAll('li.group');
+          for (const group of groups) {
+            const h3 = group.querySelector('h3');
+            if (h3 && (h3.textContent || '').trim().toUpperCase() === 'AÇÕES') {
+              acoesGroup = group;
+              break;
+            }
+          }
+
+          const holdings = readHoldingsFromPage(acoesGroup); // Pass only the 'Ações' group context
           chrome.storage.local.set({ my_portfolio_holdings: holdings }, () => {
             if (chrome.runtime.lastError) {
               console.error('[StatusInvest Ext] Erro ao salvar no cache (contexto invalidado?):', chrome.runtime.lastError.message);
@@ -1541,14 +1831,19 @@
       ewToggle.textContent = collapsed ? 'Mostrar' : 'Ocultar';
     }
   
-    ewToggle.addEventListener('click', async () => {
+    ewToggle.addEventListener('click', async () => { // Corrigido
       const nowCollapsed = ewBodyWrap.style.display !== 'none' ? true : false;
       applyCollapseState(nowCollapsed);
       await saveCollapsed(nowCollapsed);
     });
   
-    // Load initial collapsed state
-    loadCollapsed().then((c) => applyCollapseState(c));
+    // Load all initial states for panels
+    Promise.all([loadCollapsed(), loadSellCollapsed(), loadSellCurrency()]).then(([planCollapsed, sellCollapsed, showCurrency]) => {
+      applyCollapseState(planCollapsed);
+      applySellCollapseState(sellCollapsed);
+      ewSellShowCurrency.checked = showCurrency;
+    });
+
     // Load initial mode and source
     Promise.all([loadMode(), loadSource()]).then(([m, s]) => {
       ewMode = m === 'rebalancear' ? 'rebalancear' : 'investir';
