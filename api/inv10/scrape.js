@@ -93,15 +93,17 @@ async function scrapeOne(tkr) {
   const checks = {};
   let trueCount = 0;
 
-  // The specific checklist items to count, as requested.
-  const TARGET_CHECKS = new Set([
+  // The specific checklist items to count, configurable via env var.
+  const defaultChecks = [
     'Empresa nunca deu prejuízo (ano fiscal)',
     'Empresa com lucro nos últimos 20 trimestres (5 anos)',
     'Empresa possui dívida menor que patrimônio',
     'Empresa apresentou crescimento de receita nos últimos 5 anos',
     'Empresa apresentou crescimento de lucros nos últimos 5 anos',
     'Empresa com mais de 5 anos de Bolsa',
-  ]);
+  ];
+  const checksFromEnv = (process.env.INV10_TARGET_CHECKS || '').split('|').map(s => s.trim()).filter(Boolean);
+  const TARGET_CHECKS = new Set(checksFromEnv.length > 0 ? checksFromEnv : defaultChecks);
 
   // Iterate over each checklist item on the page to get its text and checked status.
   $('.checklist-item').each((_, element) => {
@@ -183,7 +185,8 @@ export default async function handler(req, res) {
     for (const t of tickers) {
       try { results.push(await scrapeOne(t)); }
       catch (e) { results.push({ ticker: toTicker(t), url: `https://investidor10.com.br/acoes/${String(t).toLowerCase()}/`, error: String(e && (e.message || e)) }); }
-      await new Promise((r) => setTimeout(r, 250)); // pequena pausa entre requisições
+      const delay = Number(process.env.INV10_SCRAPE_DELAY) || 250;
+      await new Promise((r) => setTimeout(r, delay)); // pequena pausa entre requisições
     }
 
     // Persistir

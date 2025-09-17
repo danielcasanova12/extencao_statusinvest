@@ -78,7 +78,7 @@ export default async function handler(req, res) {
         catch { resolve({}); }
       });
     }
-    const minTrue = Number(body?.min_true || process.env.FM_INV10_TRUE_MIN || 6);
+    const minTrue = Number(body?.min_true || process.env.FM_INV10_TRUE_MIN || 4);
 
     const db = await getPool();
     // 1) Tickers com true_count >= min
@@ -101,10 +101,14 @@ export default async function handler(req, res) {
     // 3) Recalcula ranks para o subconjunto
     const byTicker = new Map();
     fmRows.forEach((r) => { byTicker.set(String(r.ticker || '').trim().toUpperCase(), r); });
+
+    const LIQ_MIN = Number(process.env.MF_LIQ_MIN || 1000000);
+    const MC_MIN = Number(process.env.MF_MC_MIN || 90000000);
+
     const subset = tickers.map((t) => byTicker.get(t)).filter(x => 
       x &&
       x.liquidez != null && x.market_cap != null &&
-      x.liquidez >= 1000000 && x.market_cap >= 90000000
+      x.liquidez >= LIQ_MIN && x.market_cap >= MC_MIN
     );
     if (!subset.length) return res.status(200).json({ ok: true, processed: 0, reason: 'no_overlap' });
 

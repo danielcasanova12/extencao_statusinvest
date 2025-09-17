@@ -87,12 +87,14 @@ function tickerBase(t) {
   return m ? m[0] : s;
 }
 
-const FINANCIAL_EXCLUSION_LIST = new Set([
+const defaultExclusion = [
   'ITUB4', 'BPAC11', 'BBDC3', 'BBAS3', 'ITSA4', 'SANB11', 'B3SA3', 'BBSE3',
   'CXSE3', 'PSSA3', 'MULT3', 'ALOS3', 'BPAN4', 'BNBR3', 'BRAP4', 'ABCB4',
   'IGTA3', 'BRSR6', 'BMEB4', 'BAZA3', 'BSLI3', 'PLPL3', 'BEES3', 'BMGB4',
   'LOGG3', 'PINE4', 'WIZC3', 'BPAR3', 'SYNE3'
-]);
+].join(',');
+const exclusionFromEnv = (process.env.FINANCIAL_EXCLUSION_LIST || defaultExclusion).split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+const FINANCIAL_EXCLUSION_LIST = new Set(exclusionFromEnv);
 
 function isFinancial(row) {
   const sector = toLower(row.sector || row.setor || row.segmento || row.subsetor);
@@ -111,9 +113,8 @@ function computeEY(row, cols) {
   let net = null; if (EBIT != null && DLEBIT != null) net = DLEBIT * EBIT;
   let EV = null; if (MC != null && net != null) EV = MC + net;
   let EY = null;
-  if (EVEBIT != null && EVEBIT !== 0) EY = 1 / EVEBIT;
-  if (EY == null && PEBIT != null && DLEBIT != null && (PEBIT + DLEBIT) !== 0) EY = 1 / (PEBIT + DLEBIT);
-  if (EY == null && EBIT != null && EV != null && EV !== 0) EY = EBIT / EV;
+  // Calcula EY apenas como 100 / (EV/EBIT), quando EV/EBIT existe e é diferente de zero.
+  if (EVEBIT != null && EVEBIT !== 0) EY = 100 / EVEBIT;
   return { EY, EBIT, EV };
 }
 
@@ -205,14 +206,17 @@ function normalizeAndCompute(parsed, env) {
     });
   }
 
-  const LIQ_MIN = Number(process.env.MF_LIQ_MIN || (env && env.MF_LIQ_MIN) || 2000000);
+  const LIQ_MIN = Number(process.env.MF_LIQ_MIN || (env && env.MF_LIQ_MIN) || 1000000);
+  const MC_MIN = Number(process.env.MF_MC_MIN || (env && env.MF_MC_MIN) || 90000000);
+  const EBIT_MIN = Number(process.env.MF_EBIT_MIN || (env && env.MF_EBIT_MIN) || 1);
+  const MARGIN_EBIT_MIN = Number(process.env.MF_MARGIN_EBIT_MIN || (env && env.MF_MARGIN_EBIT_MIN) || 1);
   const CHECK_MIN = Number(process.env.MF_CHECKLIST_MIN || (env && env.MF_CHECKLIST_MIN) || 0);
 
   const filtered = rows.filter((x) => {
-    if (x.market_cap == null || x.market_cap < 90000000) return false;
+    if (x.market_cap == null || x.market_cap < MC_MIN) return false;
     if (x.liquidez == null || x.liquidez < LIQ_MIN) return false;
-    if (x.ebit == null || x.ebit <= 1) return false;
-    if (x.margem_ebit == null || x.margem_ebit <= 1) return false;
+    if (x.ebit == null || x.ebit <= EBIT_MIN) return false;
+    if (x.margem_ebit == null || x.margem_ebit <= MARGIN_EBIT_MIN) return false;
     if (process.env.MF_EXCLUDE_FINANCIAL !== '0' && isFinancial(x)) return false;
     if (x.i10_score != null && x.i10_score < CHECK_MIN) return false;
     return true;

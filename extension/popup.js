@@ -3,13 +3,6 @@
   const $ = (sel) => document.querySelector(sel);
   const log = (msg) => { const el = $('#log'); if (el) el.textContent = String(msg || ''); };
 
-  const FINANCIAL_EXCLUSION_LIST = new Set([
-    'ITUB4', 'BPAC11', 'BBDC3', 'BBAS3', 'ITSA4', 'SANB11', 'B3SA3', 'BBSE3',
-    'CXSE3', 'PSSA3', 'MULT3', 'ALOS3', 'BPAN4', 'BNBR3', 'BRAP4', 'ABCB4',
-    'IGTA3', 'BRSR6', 'BMEB4', 'BAZA3', 'BSLI3', 'PLPL3', 'BEES3', 'BMGB4',
-    'LOGG3', 'PINE4', 'WIZC3', 'BPAR3', 'SYNE3'
-  ]);
-
   // removed btnOi (Mostrar oi)
 
   const btnPing = $('#btnPing');
@@ -367,28 +360,39 @@
       const tipo = execTipo ? execTipo.value : 'formulamagica';
       if (tipo === 'inv10') {
         if (!sel.content) { setStatus('Item sem conteúdo. Faça o upload novamente.'); return; }
-        
-        const allStocks = extractStocksFromCsv(sel.content);
-        if (!allStocks.length) { setStatus('Não foi possível extrair ações do CSV ou colunas (liquidez, market_cap) estão ausentes.'); return; }
 
-        const stocksToScrape = allStocks.filter(stock => 
-            !FINANCIAL_EXCLUSION_LIST.has(stock.ticker) &&
-            stock.liquidez != null && stock.market_cap != null &&
-            stock.liquidez >= 1000000 && stock.market_cap >= 90000000
-        );
-        const tickers = stocksToScrape.map(s => s.ticker);
+        // Get filter settings from storage
+        chrome.storage.sync.get({
+          POPUP_EXCLUSION_LIST: '',
+          POPUP_MIN_LIQUIDITY: '1000000',
+          // Market cap filter is applied on the server, but we can keep it here for pre-filtering if needed.
+          // For now, we only filter by liquidity and exclusion list before scraping.
+        }, (settings) => {
+          const exclusionList = new Set((settings.POPUP_EXCLUSION_LIST || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean));
+          const minLiquidity = Number(settings.POPUP_MIN_LIQUIDITY) || 1000000;
 
-        if (!tickers.length) { setStatus('Nenhuma ação no CSV atende aos critérios de liquidez/capitalização.'); return; }
-        
-        setStatus(`Iniciando raspagem de ${tickers.length} tickers...`);
-        setProgress(tickers.length, 0);
-        setProgressInfo({ running: true, stage: 'init', total: tickers.length, ok: 0, fail: 0, startedAt: new Date().toISOString() });
-        try {
-          chrome.runtime.sendMessage({ type: 'INV10_START', tickers }, (resp) => {
-            if (resp && resp.ok) { setStatus('Raspagem iniciada...'); startJobPolling(); }
-            else { setStatus(`Erro ao iniciar: ${resp && resp.error ? resp.error : 'falha desconhecida'}`); }
-          });
-        } catch (e) { setStatus(String(e)); }
+          const allStocks = extractStocksFromCsv(sel.content);
+          if (!allStocks.length) { setStatus('Não foi possível extrair ações do CSV ou colunas (liquidez, market_cap) estão ausentes.'); return; }
+
+          const stocksToScrape = allStocks.filter(stock =>
+              !exclusionList.has(stock.ticker) &&
+              stock.liquidez != null &&
+              stock.liquidez >= minLiquidity
+          );
+          const tickers = stocksToScrape.map(s => s.ticker);
+
+          if (!tickers.length) { setStatus('Nenhuma ação no CSV atende aos critérios de liquidez/exclusão.'); return; }
+
+          setStatus(`Iniciando raspagem de ${tickers.length} tickers...`);
+          setProgress(tickers.length, 0);
+          setProgressInfo({ running: true, stage: 'init', total: tickers.length, ok: 0, fail: 0, startedAt: new Date().toISOString() });
+          try {
+            chrome.runtime.sendMessage({ type: 'INV10_START', tickers }, (resp) => {
+              if (resp && resp.ok) { setStatus('Raspagem iniciada...'); startJobPolling(); }
+              else { setStatus(`Erro ao iniciar: ${resp && resp.error ? resp.error : 'falha desconhecida'}`); }
+            });
+          } catch (e) { setStatus(String(e)); }
+        });
         return;
       }
 
@@ -417,25 +421,35 @@
               const diag = resp.json && resp.json.diag;
               const extra = diag ? ` | lidas: ${diag.parsed_rows}, após filtros: ${diag.after_compute}` : '';
             setStatus(`FM ok. Inseridos: ${p}${extra}. Filtrando para Investidor10...`);
-            
-            const allStocks = extractStocksFromCsv(sel.content);
-            if (!allStocks.length) { setStatus('FM ok. Não foi possível extrair tickers para o Investidor10 (verificar colunas).'); return; }
 
-            const stocksToScrape = allStocks.filter(stock => 
-                !FINANCIAL_EXCLUSION_LIST.has(stock.ticker) &&
-                stock.liquidez != null && stock.market_cap != null &&
-                stock.liquidez >= 1000000 && stock.market_cap >= 90000000
-            );
-            const tickers = stocksToScrape.map(s => s.ticker);
+            // Get filter settings from storage to decide which tickers to scrape
+            chrome.storage.sync.get({
+              POPUP_EXCLUSION_LIST: '',
+              POPUP_MIN_LIQUIDITY: '1000000',
+            }, (settings) => {
+              const exclusionList = new Set((settings.POPUP_EXCLUSION_LIST || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean));
+              const minLiquidity = Number(settings.POPUP_MIN_LIQUIDITY) || 1000000;
 
-            if (!tickers.length) { setStatus('FM ok. Nenhuma ação no CSV atende aos critérios para o Investidor10.'); return; }
-            
-              try {
-                chrome.runtime.sendMessage({ type: 'INV10_START', tickers }, (r2) => {
-                if (r2 && r2.ok) { setStatus(`INV10 iniciado para ${tickers.length} tickers...`); startJobPolling(); }
-                  else setStatus(`INV10 erro ao iniciar: ${r2 && r2.error ? r2.error : 'falha desconhecida'}`);
-                });
-              } catch (e2) { setStatus(String(e2)); }
+              const allStocks = extractStocksFromCsv(sel.content);
+              if (!allStocks.length) { setStatus('FM ok. Não foi possível extrair tickers para o Investidor10 (verificar colunas).'); return; }
+
+              const stocksToScrape = allStocks.filter(stock =>
+                  !exclusionList.has(stock.ticker) &&
+                  stock.liquidez != null &&
+                  stock.liquidez >= minLiquidity
+              );
+              const tickers = stocksToScrape.map(s => s.ticker);
+
+              if (!tickers.length) { setStatus('FM ok. Nenhuma ação no CSV atende aos critérios para o Investidor10.'); return; }
+
+                try {
+                  chrome.runtime.sendMessage({ type: 'INV10_START', tickers }, (r2) => {
+                  if (r2 && r2.ok) { setStatus(`INV10 iniciado para ${tickers.length} tickers...`); startJobPolling(); }
+                    else setStatus(`INV10 erro ao iniciar: ${r2 && r2.error ? r2.error : 'falha desconhecida'}`);
+                  });
+                } catch (e2) { setStatus(String(e2)); }
+            });
+
             } else {
               setStatus(`Erro na Fórmula Mágica: ${resp && resp.error ? resp.error : 'falha desconhecida'}`);
             }

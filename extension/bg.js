@@ -1,7 +1,7 @@
 // Background service worker (MV3)
 // - Centraliza chamadas à API e automações
 
-const DEFAULT_API_BASE = 'https://extencao-hjrqkjq6r-daniels-projects-b07af66f.vercel.app';
+const DEFAULT_API_BASE = 'https://extencao-ppf6qzmyl-daniels-projects-b07af66f.vercel.app';
 
 function getApiBase() {
   return new Promise((resolve) => {
@@ -21,6 +21,13 @@ async function getApiToken() {
 async function fetchFmLastUpdated() {
   const base = await getApiBase();
   const resp = await fetch(base.replace(/\/$/, '') + '/api/fm-last-updated');
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  return resp.json();
+}
+
+async function fetchLastUpdates() {
+  const base = await getApiBase();
+  const resp = await fetch(base.replace(/\/$/, '') + '/api/last-updates');
   if (!resp.ok) throw new Error('HTTP ' + resp.status);
   return resp.json();
 }
@@ -177,6 +184,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === 'FETCH_FM_LAST_UPDATED') {
     (async ()=>{ try { const json = await fetchFmLastUpdated(); sendResponse({ ok:true, json }); } catch(e){ sendResponse({ ok:false, error:String(e?.message||e) }); } })(); return true;
   }
+  if (message.type === 'FETCH_LAST_UPDATES') {
+    (async ()=>{ try { const json = await fetchLastUpdates(); sendResponse({ ok:true, json }); } catch(e){ sendResponse({ ok:false, error:String(e?.message||e) }); } })(); return true;
+  }
+
   if (message.type === 'FETCH_FM_RANKS') {
     (async ()=>{ try { const json = await fetchFmRanks(); sendResponse({ ok:true, json }); } catch(e){ sendResponse({ ok:false, error:String(e?.message||e) }); } })(); return true;
   }

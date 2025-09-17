@@ -5,47 +5,51 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Painel</title>
     <style>
-      :root { color-scheme: dark; }
-      body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; background: #0f172a; color: #e5e7eb; }
+      :root { color-scheme: light; }
+      body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; background: #f4f4f9; color: #333; }
       html, body { min-width: 360px; }
-      .panel { width: 420px; max-width: 420px; max-height: 600px; display:flex; flex-direction:column; border:1px solid #1f2937; box-sizing: border-box; }
-      .header { display:flex; align-items:center; justify-content:space-between; padding:10px 12px; background:#111827; border-bottom:1px solid #1f2937; }
-      .title { font-weight:700; font-size:14px; }
+      .panel { width: 420px; max-width: 420px; max-height: 600px; display:flex; flex-direction:column; background: white; border: 1px solid #e5e7eb; box-shadow: 0 2px 4px rgba(0,0,0,0.05); box-sizing: border-box; }
+      .header { display:flex; align-items:center; justify-content:space-between; padding:10px 12px; background:#03ab95; color: white; }
+      .title { font-weight:700; font-size:14px; color: white; }
       .body { padding:10px 12px; overflow-y:auto; overflow-x:hidden; max-height:520px; }
       /* search removed */
-      .section-title { font-size:12px; color:#94a3b8; margin:10px 0 6px 2px; }
-      .card { background:#111827; border:1px solid #1f2937; border-radius:10px; padding:10px; margin-bottom:8px; display:flex; align-items:center; justify-content:space-between; }
+      .section-title { font-size:12px; color:#6b7280; margin:10px 0 6px 2px; font-weight: 600; text-transform: uppercase; }
+      .section-separator { margin-top: 16px; padding-top: 16px; border-top: 1px solid #e5e7eb; }
+      .card { background: #fff; border:1px solid #e5e7eb; border-radius:10px; padding:10px; margin-bottom:8px; display:flex; align-items:center; justify-content:space-between; }
       .item { display:flex; align-items:center; gap:10px; }
-      .avatar { width:26px; height:26px; border-radius:6px; background:#0b1220; border:1px solid #334155; display:flex; align-items:center; justify-content:center; font-size:12px; color:#94a3b8; }
-      .name { font-weight:600; color:#f3f4f6; font-size:13px; }
-      .sub { font-size:12px; color:#9ca3af; }
+      .avatar { width:28px; height:28px; border-radius:8px; background:#e6f7f5; border:1px solid #beebe4; display:flex; align-items:center; justify-content:center; font-size:12px; color:#028a7a; font-weight: 600; }
+      .name { font-weight:600; color:#1f2937; font-size:13px; }
+      .sub { font-size:12px; color:#6b7280; }
       .row-actions { display:flex; gap:6px; }
-      .btn { border:1px solid #334155; background:#1f2937; color:#e5e7eb; border-radius:8px; padding:6px 10px; font-size:12px; cursor:pointer; }
-      .btn.danger { background:#7f1d1d; border-color:#ef4444; }
-      .btn[disabled] { opacity: .5; cursor: not-allowed; }
-      .footer { display:flex; align-items:center; justify-content:space-around; padding:8px; border-top:1px solid #1f2937; background:#0b1220; }
-      .tab { background:transparent; border:1px solid transparent; color:#9ca3af; padding:6px 8px; border-radius:8px; cursor:pointer; font-size:12px; }
-      .tab.active { color:#e5e7eb; background:#111827; border-color:#1f2937; }
-      a { color: #93c5fd; text-decoration: none; }
-      label { display:block; font-size:12px; color:#cbd5e1; margin-bottom:6px; }
-      input[type="file"] { width:100%; background:#0b1220; color:#f3f4f6; border:1px solid #334155; border-radius:10px; padding:8px; font-size:12px; }
-      .row { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-top:8px; }
-      select { padding:8px 10px; border:1px solid #334155; background:#0b1220; color:#f3f4f6; border-radius:10px; font-size:12px; flex:1 1 180px; min-width:160px; }
+      .btn { border:1px solid transparent; background:#03ab95; color:#fff; border-radius:8px; padding:6px 12px; font-size:12px; cursor:pointer; font-weight: 500; }
+      .btn:hover { background: #028a7a; }
+      .btn.danger { background:#fee2e2; color:#991b1b; border-color:#fecaca; }
+      .btn.danger:hover { background: #fecaca; }
+      .btn[disabled] { background: #d1d5db; color: #6b7280; cursor: not-allowed; }
+      .footer { display:flex; align-items:center; justify-content:space-around; padding:8px; border-top:1px solid #e5e7eb; background:#f9fafb; }
+      .tab { background:transparent; border:1px solid transparent; color:#6b7280; padding:6px 8px; border-radius:8px; cursor:pointer; font-size:12px; }
+      .tab:hover { background: #e5e7eb; color: #1f2937; }
+      a { color: #03ab95; text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      label { display:block; font-size:12px; color:#374151; margin-bottom:6px; font-weight: 500; }
+      input[type="file"] { width:100%; box-sizing: border-box; background:#fff; color:#374151; border:1px solid #d1d5db; border-radius:8px; padding:8px; font-size:12px; }
+      .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:8px; }
+      select { padding:8px 10px; border:1px solid #d1d5db; background:#fff; color:#374151; border-radius:8px; font-size:12px; flex:1 1 180px; min-width:160px; }
       .row .btn { flex: 0 0 auto; }
       .row > label { display:inline; margin:0; white-space:nowrap; }
-      .row > label { display:inline; margin:0; white-space:nowrap; }
       .list { margin-top:8px; display:flex; flex-direction:column; gap:6px; }
-      .list-item { display:flex; align-items:center; justify-content:space-between; background:#111827; border:1px solid #1f2937; border-radius:10px; padding:8px 10px; }
+      .list-item { display:flex; align-items:center; justify-content:space-between; background:#fff; border:1px solid #e5e7eb; border-radius:10px; padding:8px 10px; }
       .list-main { display:flex; align-items:center; gap:8px; }
-      .list-name { font-size:13px; color:#f3f4f6; }
-      .list-meta { font-size:11px; color:#9ca3af; }
+      .list-name { font-size:13px; color:#1f2937; }
+      .list-meta { font-size:11px; color:#6b7280; }
       .list-actions { display:flex; gap:6px; }
-      .icon-btn { border:1px solid #334155; background:#1f2937; color:#e5e7eb; border-radius:8px; width:28px; height:28px; display:flex; align-items:center; justify-content:center; cursor:pointer; }
+      .icon-btn { border:1px solid #d1d5db; background:#fff; color:#6b7280; border-radius:8px; width:28px; height:28px; display:flex; align-items:center; justify-content:center; cursor:pointer; }
+      .icon-btn:hover { background: #f3f4f6; color: #1f2937; }
       /* Progress */
-      .progress { display:none; height:8px; background:#111827; border:1px solid #334155; border-radius:8px; overflow:hidden; margin-top:6px; }
-      .progress .bar { height:100%; width:0%; background:#10b981; transition: width .2s ease; }
-      .progress-text { font-size:12px; color:#94a3b8; margin-top:4px; }
-      .progress-info { font-size:12px; color:#cbd5e1; margin-top:2px; }
+      .progress { display:none; height:8px; background:#e5e7eb; border-radius:8px; overflow:hidden; margin-top:6px; }
+      .progress .bar { height:100%; width:0%; background:#03ab95; transition: width .2s ease; }
+      .progress-text { font-size:12px; color:#6b7280; margin-top:4px; }
+      .progress-info { font-size:12px; color:#374151; margin-top:2px; }
     </style>
   </head>
   <body>
@@ -102,17 +106,15 @@
           <div id="statusArea" class="sub" aria-live="polite" style="margin-top:6px;"></div>
           <div id="progress" class="progress" aria-hidden="true"><div id="progressBar" class="bar"></div></div>
           <div id="progressText" class="progress-text"></div>
-          </div>
-          
           <div id="progressInfo" class="progress-info"></div>
         </div>
 
-        <div class="section" id="savedSection">
+        <div class="section section-separator" id="savedSection">
           <div class="section-title">Arquivos salvos</div>
           <div id="savedList" class="list"></div>
         </div>
 
-        <div class="section" id="historySection">
+        <div class="section section-separator" id="historySection">
           <div class="section-title">Histórico de execuções (INV10)</div>
           <div class="row">
             <button class="btn danger" id="btnClearHistory" title="Limpar histórico">Limpar histórico</button>
