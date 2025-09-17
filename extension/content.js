@@ -1083,7 +1083,8 @@
         .card { width:100%; background:#fff; color:#1f2937; border:1px solid #e5e7eb; border-radius:10px; box-shadow:0 2px 8px rgba(0,0,0,.08); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; margin: 12px 0; }      
         .header { display:flex; align-items:center; justify-content:space-between; padding:10px 12px; border-bottom:1px solid #f3f4f6; background:#03ab95; color: white; border-top-left-radius:10px; border-top-right-radius:10px; }
         .title { font-weight:700; font-size:14px; margin:0; color: white; }
-        .controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+        .controls { display:flex; flex-direction: column; gap:8px; align-items:flex-end; }
+        .controls-row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; justify-content: flex-end; }
         .toggle-btn { padding:6px 10px; border:1px solid #beebe4; background:#e6f7f5; color:#028a7a; border-radius:6px; font-size:12px; cursor:pointer; }
         select, input[type="text"] { padding:6px 8px; border:1px solid #e5e7eb; border-radius:6px; font-size:12px; background:#fff; }
         .body { padding:10px 12px; }
@@ -1107,31 +1108,35 @@
         <div class="header">
           <h3 class="title">Plano de Rebalanceamento (Equal-Weight)</h3>
           <div class="controls">
-            <label>Fonte
-              <select id="ewSource">
-                <option value="fm" selected>Fórmula Mágica</option>
-                <option value="fm_inv10">FM + Inv10</option>
-              </select>
-            </label>
-            <label>Top
-              <select id="ewN">
-                <option value="5">5</option>
-                <option value="10" selected>10</option>
-                <option value="15">15</option>
-                <option value="20">20</option>
-                <option value="30">30</option>
-              </select>
-            </label>
-            <label>Total (R$)
-              <input type="text" id="ewTotal" size="12"/>
-            </label>
-            <span class="mode">
-              <label title="Compra com base no orçamento, sem vender posições."><input type="radio" name="ewMode" value="investir" checked /> Investir</label>
-              <label title="Ajusta quantidades para chegar ao alvo por ativo; só considera compras adicionais."><input type="radio" name="ewMode" value="rebalancear" /> Rebalancear</label>
-            </span>
-            <button id="ewUpdateMyStocks" class="toggle-btn" type="button" title="Exibe todos os ativos e salva a lista da sua carteira para uso nos cálculos.">Atualizar Minhas Ações</button>
-            <button id="ewExportCsv" class="toggle-btn" type="button" title="Baixar tabela em CSV.">Exportar CSV</button>
-            <button id="ewToggle" class="toggle-btn" type="button">Ocultar</button>
+            <div class="controls-row">
+              <label>Fonte
+                <select id="ewSource">
+                  <option value="fm" selected>Fórmula Mágica</option>
+                  <option value="fm_inv10">FM + Inv10</option>
+                </select>
+              </label>
+              <label>Top
+                <select id="ewN">
+                  <option value="5">5</option>
+                  <option value="10" selected>10</option>
+                  <option value="15">15</option>
+                  <option value="20">20</option>
+                  <option value="30">30</option>
+                </select>
+              </label>
+              <label>Total (R$)
+                <input type="text" id="ewTotal" size="12"/>
+              </label>
+              <span class="mode">
+                <label title="Compra com base no orçamento, sem vender posições."><input type="radio" name="ewMode" value="investir" checked /> Investir</label>
+                <label title="Ajusta quantidades para chegar ao alvo por ativo; só considera compras adicionais."><input type="radio" name="ewMode" value="rebalancear" /> Rebalancear</label>
+              </span>
+            </div>
+            <div class="controls-row">
+              <button id="ewUpdateMyStocks" class="toggle-btn" type="button" title="Exibe todos os ativos e salva a lista da sua carteira para uso nos cálculos.">Atualizar Minhas Ações</button>
+              <button id="ewExportCsv" class="toggle-btn" type="button" title="Baixar tabela em CSV.">Exportar CSV</button>
+              <button id="ewToggle" class="toggle-btn" type="button">Ocultar</button>
+            </div>
           </div>
         </div>
         <div class="body" id="ewBodyWrap">
@@ -1159,9 +1164,11 @@
         <div class="header sell-header" id="ewSellHeader" style="margin-top: 16px; display: none;">
           <h3 class="title">Plano de Venda (Ativos Fora do Top N)</h3>
           <div class="controls">
-            <label style="color:white; font-size:12px; display:flex; align-items:center; gap:4px; cursor:pointer;"><input type="checkbox" id="ewSellShowCurrency"> Mostrar R$</label>
-            <button id="ewSellExportCsv" class="toggle-btn" type="button" title="Baixar lista em CSV.">Exportar CSV</button>
-            <button id="ewSellToggle" class="toggle-btn" type="button">Ocultar</button>
+            <div class="controls-row">
+              <label style="color:white; font-size:12px; display:flex; align-items:center; gap:4px; cursor:pointer;"><input type="checkbox" id="ewSellShowCurrency"> Mostrar R$</label>
+              <button id="ewSellExportCsv" class="toggle-btn" type="button" title="Baixar lista em CSV.">Exportar CSV</button>
+              <button id="ewSellToggle" class="toggle-btn" type="button">Ocultar</button>
+            </div>
           </div>
         </div>
         <div class="body" id="ewSellBodyWrap" style="display: none;">
