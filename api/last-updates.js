@@ -68,7 +68,12 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(204).end();
   if (req.method !== 'GET') return res.status(405).json({ ok: false, error: 'Method Not Allowed' });
 
-  const tablesToCheck = ['tb_formulamagica', 'tb_inv10', 'tb_formulamagica_inv10'];
+  const tablesToCheck = [
+    'tb_formulamagica',
+    'tb_inv10',
+    'tb_formulamagica_inv10',
+    'tb_formulamagica_inv10_sum',
+    'tb_statusinvest'];
 
   try {
     const client = await getPool();

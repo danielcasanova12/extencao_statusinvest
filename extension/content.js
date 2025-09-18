@@ -256,7 +256,7 @@
     if (fmCell) {
       const rank = code && ranksMap ? ranksMap[code] : undefined;
       // reset styles first
-      fmCell.style.backgroundColor = '';
+      fmCell.style.setProperty('background-color', '#fff', 'important');
       fmCell.style.color = '';
       fmCell.style.fontWeight = '';
 
@@ -279,6 +279,7 @@
       const score = code && i10Map ? i10Map[code] : undefined;
       i10Cell.textContent = score != null ? String(score) : '-';
       i10Cell.style.color = score != null ? '#1565c0' : '#9e9e9e';
+      i10Cell.style.setProperty('background-color', '#fff', 'important');
     }
   }
 
@@ -1170,7 +1171,10 @@
         <div id="ewRefreshAlert" style="display:none; position:fixed; bottom:20px; right:20px; z-index:10000; background:white; border:1px solid #e5e7eb; border-radius:10px; box-shadow:0 4px 12px rgba(0,0,0,.15); width:300px; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;">
           <div style="padding:10px 12px; background:#03ab95; color:white; border-top-left-radius:10px; border-top-right-radius:10px; font-weight:700; font-size:14px; display:flex; justify-content:space-between; align-items:center;">
             <span>Verificando Preços</span>
-            <span id="ewRefreshCount" style="font-size:12px; font-style:italic;"></span>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span id="ewRefreshCount" style="font-size:12px; font-style:italic;"></span>
+              <button id="ewClearLogBtn" title="Limpar histórico de alterações de preços" style="background:transparent; border:1px solid #beebe4; color:white; border-radius:4px; font-size:10px; cursor:pointer; padding: 2px 5px; line-height:1;">Limpar</button>
+            </div>
           </div>
           <div style="padding:12px;">
             <div id="ewRefreshCountdown" style="font-size:13px; margin-bottom:10px; color:#374151;"></div>
@@ -1250,6 +1254,7 @@
     const ewRefreshStockList = $('#ewRefreshStockList');
     const ewRefreshChangeLog = $('#ewRefreshChangeLog');
     const ewRefreshCount = $('#ewRefreshCount');
+    const ewClearLogBtn = $('#ewClearLogBtn');
 
     const ewSellHeader = $('#ewSellHeader');
     const ewSellBodyWrap = $('#ewSellBodyWrap');
@@ -1271,11 +1276,22 @@
     function loadSellCurrency() { return new Promise((resolve) => { try { chrome.storage.sync.get([SELL_CURRENCY_KEY], (r) => resolve(Boolean(r?.[SELL_CURRENCY_KEY]))); } catch { resolve(false); } }); }
     function saveSellCurrency(v) { return new Promise((resolve) => { try { chrome.storage.sync.set({ [SELL_CURRENCY_KEY]: Boolean(v) }, () => resolve()); } catch { resolve(); } }); }
     
+    if (ewClearLogBtn) {
+      ewClearLogBtn.addEventListener('click', async () => {
+        if (confirm('Tem certeza que deseja limpar o histórico de alterações de preços?')) {
+          await new Promise(resolve => chrome.storage.local.set({ [PRICE_CHANGE_LOG_KEY]: [] }, resolve));
+          ewRefreshChangeLog.innerHTML = '';
+          ewRefreshChangeLog.style.display = 'none';
+        }
+      });
+    }
+
     // Utils are now global
   
     // --- Auto-refresh price checker logic ---
     const REFRESH_KEY = 'ew_auto_refresh_running';
     const REFRESH_COUNT_KEY = 'ew_auto_refresh_count';
+    const PRICE_CHANGE_LOG_KEY = 'ew_price_change_log';
     const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
     let refreshTimeoutId = null;
     let countdownIntervalId = null;
@@ -1387,30 +1403,43 @@
         ewRefreshCountdown.style.fontWeight = 'bold';
         ewRefreshCountdown.style.color = '#03ab95';
 
-        // Build and display the change log
+        // --- NEW: Persistent Price Change Log ---
+        const { [PRICE_CHANGE_LOG_KEY]: existingLog = [] } = await localGet([PRICE_CHANGE_LOG_KEY]);
+        const newLogEntry = {
+          timestamp: new Date().toISOString(),
+          changes: changes.map(c => ({ ticker: c.ticker, oldPrice: c.oldPrice, newPrice: c.newPrice })),
+        };
+        const newLog = [newLogEntry, ...existingLog].slice(0, 50); // Keep last 50 entries
+        await new Promise(resolve => chrome.storage.local.set({ [PRICE_CHANGE_LOG_KEY]: newLog }, resolve));
+
+        // Build and display the change log from the full history
         const logHTML = `
-          <div style="font-weight:bold; margin-bottom:5px;">Alterações Detectadas:</div>
-          <table style="width:100%; font-size:12px; border-collapse:collapse;">
-            <thead>
-              <tr>
-                <th style="padding:4px; border-bottom:1px solid #e5e7eb; text-align:left;">Ativo</th>
-                <th style="padding:4px; border-bottom:1px solid #e5e7eb; text-align:right;">Preço Antigo</th>
-                <th style="padding:4px; border-bottom:1px solid #e5e7eb; text-align:right;">Preço Novo</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${changes.map(change => `
-                <tr>
-                  <td style="padding:4px;">${change.ticker}</td>
-                  <td style="padding:4px; text-align:right;">${fmtBRL(change.oldPrice)}</td>
-                  <td style="padding:4px; text-align:right; font-weight:bold; color:#03ab95;">${fmtBRL(change.newPrice)}</td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-          <div style="font-size:10px; color:#6b7280; text-align:right; margin-top:4px;">
-            ${new Date(changes[0].timestamp).toLocaleString('pt-BR')}
-          </div>
+          <div style="font-weight:bold; margin-bottom:5px;">Histórico de Alterações de Preços:</div>
+          ${newLog.map(entry => `
+            <div style="border-bottom: 1px solid #f3f4f6; padding-bottom: 5px; margin-bottom: 5px;">
+              <div style="font-size:11px; color:#6b7280; font-weight:bold; margin-bottom:4px;">
+                ${new Date(entry.timestamp).toLocaleString('pt-BR')}
+              </div>
+              <table style="width:100%; font-size:12px; border-collapse:collapse;">
+                <thead>
+                  <tr>
+                    <th style="padding:2px; border-bottom:1px solid #e5e7eb; text-align:left;">Ativo</th>
+                    <th style="padding:2px; border-bottom:1px solid #e5e7eb; text-align:right;">Preço Antigo</th>
+                    <th style="padding:2px; border-bottom:1px solid #e5e7eb; text-align:right;">Preço Novo</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${entry.changes.map(change => `
+                    <tr>
+                      <td style="padding:2px;">${change.ticker}</td>
+                      <td style="padding:2px; text-align:right;">${fmtBRL(change.oldPrice)}</td>
+                      <td style="padding:2px; text-align:right; font-weight:bold; color:#03ab95;">${fmtBRL(change.newPrice)}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          `).join('')}
         `;
         ewRefreshChangeLog.innerHTML = logHTML;
         ewRefreshChangeLog.style.display = 'block';
