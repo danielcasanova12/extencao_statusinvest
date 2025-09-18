@@ -328,25 +328,47 @@
       chrome.runtime.sendMessage({ type: 'FETCH_LAST_UPDATES' }, (lu) => {
         if (lu && lu.ok && lu.json && lu.json.updates) {
           const updates = lu.json.updates;
-          let oldest = { table: null, date: null, days: -1 };
-
           const now = new Date();
+
+          let priceUpdateInfo = null;
+          let oldestUpdateInfo = { table: null, date: null, days: -1, isoTs: null };
+
+          // Find both price update and oldest update
           for (const table in updates) {
             const isoTs = updates[table];
             if (isoTs) {
               const date = new Date(isoTs);
               const diffTime = now - date;
-              // Use start of day for more stable "days ago" count
               const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-              if (oldest.date === null || date < oldest.date) {
-                oldest = { table, date, days: diffDays };
+
+              // Check for price table (e.g., tb_statusinvest)
+              if (/statusinvest/i.test(table)) {
+                priceUpdateInfo = {
+                  tableName: 'Preços',
+                  date: date,
+                  days: diffDays,
+                  isoTs: isoTs,
+                };
+              }
+
+              // Check for oldest
+              if (oldestUpdateInfo.date === null || date < oldestUpdateInfo.date) {
+                oldestUpdateInfo = { table, date, days: diffDays, isoTs: isoTs };
               }
             }
           }
 
-          if (oldest.date) {
-            placeLastUpdatedIndicator(oldest.table, oldest.days, oldest.date.toISOString());
-            showOutdatedDataAlert(oldest.date.toISOString());
+          // Decide what to display: prioritize price update info
+          if (priceUpdateInfo) {
+            placeLastUpdatedIndicator(priceUpdateInfo.tableName, priceUpdateInfo.days, priceUpdateInfo.isoTs, true);
+          } else if (oldestUpdateInfo.date) {
+            // If no price info, show the oldest as before
+            placeLastUpdatedIndicator(oldestUpdateInfo.table, oldestUpdateInfo.days, oldestUpdateInfo.isoTs, false);
+          }
+
+          // Alert should always be based on the absolute oldest data
+          if (oldestUpdateInfo.date) {
+            showOutdatedDataAlert(oldestUpdateInfo.isoTs);
           }
         } else {
           console.warn('[content] last-updates request failed:', lu?.error || 'unknown');
@@ -441,7 +463,7 @@
   }
 
   let headerIndicatorTries = 0;
-  function placeLastUpdatedIndicator(tableName, daysAgo, isoTs) {
+  function placeLastUpdatedIndicator(tableName, daysAgo, isoTs, isPriceUpdate = false) {
     try {
       const id = 'fm-last-updated-indicator';
       if (!tableName || daysAgo < 0) return;
@@ -470,7 +492,9 @@
       }
 
       const daysText = diffDays === 0 ? 'hoje' : (diffDays === 1 ? '1 dia atrás' : `${diffDays} dias atrás`);
-      const text = `Última atualização mais antiga: ${tableName} – ${daysText}`;
+      const text = isPriceUpdate
+        ? `Preços atualizados ${daysText}`
+        : `Dados mais antigos (${tableName}) atualizados ${daysText}`;
       
       const applyStyles = (el) => {
         if (!el) return;
@@ -480,6 +504,7 @@
         el.style.padding = '2px 6px';
         el.style.borderRadius = '4px';
         el.textContent = `• ${text}`;
+        el.title = `Data exata: ${formatBrazil(isoTs)}`;
       };
       // --- End of color logic ---
 
@@ -1133,9 +1158,26 @@
               </span>
             </div>
             <div class="controls-row">
+              <span id="ewAutoRefreshStatus" style="color: white; font-size: 11px; font-style: italic; margin-right: auto;"></span>
+              <button id="ewAutoRefresh" class="toggle-btn" type="button" title="Verificar automaticamente a cada 5 minutos se os preços das ações foram atualizados.">Iniciar Verificação</button>
               <button id="ewUpdateMyStocks" class="toggle-btn" type="button" title="Exibe todos os ativos e salva a lista da sua carteira para uso nos cálculos.">Atualizar Minhas Ações</button>
               <button id="ewExportCsv" class="toggle-btn" type="button" title="Baixar tabela em CSV.">Exportar CSV</button>
               <button id="ewToggle" class="toggle-btn" type="button">Ocultar</button>
+            </div>
+          </div>
+        </div>
+        <div id="ewRefreshAlert" style="display:none; position:fixed; bottom:20px; right:20px; z-index:10000; background:white; border:1px solid #e5e7eb; border-radius:10px; box-shadow:0 4px 12px rgba(0,0,0,.15); width:300px; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;">
+          <div style="padding:10px 12px; background:#03ab95; color:white; border-top-left-radius:10px; border-top-right-radius:10px; font-weight:700; font-size:14px; display:flex; justify-content:space-between; align-items:center;">
+            <span>Verificando Preços</span>
+            <span id="ewRefreshCount" style="font-size:12px; font-style:italic;"></span>
+          </div>
+          <div style="padding:12px;">
+            <div id="ewRefreshCountdown" style="font-size:13px; margin-bottom:10px; color:#374151;"></div>
+            <div id="ewRefreshStockList" style="max-height:200px; overflow-y:auto; font-size:12px;">
+              <!-- Stock list will be populated here -->
+            </div>
+            <div id="ewRefreshChangeLog" style="margin-top:10px; border-top: 1px solid #e5e7eb; padding-top:10px; font-size:12px; display:none;">
+              <!-- Change log will be populated here -->
             </div>
           </div>
         </div>
@@ -1200,6 +1242,13 @@
     const ewToggle = $('#ewToggle');
     const ewUpdateMyStocks = $('#ewUpdateMyStocks');
     const ewExportCsv = $('#ewExportCsv');
+    const ewAutoRefresh = $('#ewAutoRefresh');
+    const ewAutoRefreshStatus = $('#ewAutoRefreshStatus');
+    const ewRefreshAlert = $('#ewRefreshAlert');
+    const ewRefreshCountdown = $('#ewRefreshCountdown');
+    const ewRefreshStockList = $('#ewRefreshStockList');
+    const ewRefreshChangeLog = $('#ewRefreshChangeLog');
+    const ewRefreshCount = $('#ewRefreshCount');
 
     const ewSellHeader = $('#ewSellHeader');
     const ewSellBodyWrap = $('#ewSellBodyWrap');
@@ -1223,6 +1272,229 @@
     
     // Utils are now global
   
+    // --- Auto-refresh price checker logic ---
+    const REFRESH_KEY = 'ew_auto_refresh_running';
+    const REFRESH_COUNT_KEY = 'ew_auto_refresh_count';
+    const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+    let refreshTimeoutId = null;
+    let countdownIntervalId = null;
+    // Use window.sessionStorage as chrome.storage.session is not available in content scripts.
+    const sessionGet = (keys) => new Promise(resolve => {
+      const result = {};
+      if (Array.isArray(keys)) {
+        keys.forEach(key => {
+          const value = sessionStorage.getItem(key);
+          if (value !== null) {
+            try { result[key] = JSON.parse(value); } catch { result[key] = value; }
+          }
+        });
+      }
+      resolve(result);
+    });
+    const sessionSet = (obj) => new Promise(resolve => {
+      if (typeof obj === 'object' && obj !== null) {
+        for (const key in obj) {
+          if (Object.hasOwnProperty.call(obj, key)) {
+            sessionStorage.setItem(key, JSON.stringify(obj[key]));
+          }
+        }
+      }
+      resolve();
+    });
+    const localGet = (keys) => new Promise((resolve, reject) => {
+      try {
+        chrome.storage.local.get(keys, (result) => {
+          if (chrome.runtime.lastError) return reject(chrome.runtime.lastError);
+          resolve(result);
+        });
+      } catch (e) { reject(e); }
+    });
+
+    async function handleAutoRefresh() {
+      if (refreshTimeoutId) clearTimeout(refreshTimeoutId);
+      if (countdownIntervalId) clearInterval(countdownIntervalId);
+
+      const { [REFRESH_KEY]: isRunning, [REFRESH_COUNT_KEY]: currentCount } = await sessionGet([REFRESH_KEY, REFRESH_COUNT_KEY]);
+
+      if (!isRunning) {
+        ewRefreshAlert.style.display = 'none';
+        ewAutoRefresh.textContent = 'Iniciar Verificação';
+        ewAutoRefreshStatus.textContent = '';
+        ewRefreshCount.textContent = '';
+        ewAutoRefresh.disabled = false;
+        return;
+      }
+
+      // It is running, so increment and display count.
+      // The count is initialized to 0 when starting, so the first refresh will be #1.
+      const newCount = (Number(currentCount) || 0) + 1;
+      await sessionSet({ [REFRESH_COUNT_KEY]: newCount });
+      ewRefreshCount.textContent = `Atualização #${newCount}`;
+
+      ewAutoRefresh.textContent = 'Parar Verificação';
+      ewAutoRefreshStatus.textContent = 'Aguardando tabela...';
+      ewAutoRefresh.disabled = false;
+
+      await new Promise(resolve => {
+        let tries = 0;
+        const iv = setInterval(() => {
+          if (findBodyRows().length > 0 || ++tries > 20) {
+            clearInterval(iv);
+            resolve();
+          }
+        }, 500);
+      });
+
+      ewAutoRefreshStatus.textContent = 'Verificando preços...';
+
+      const { my_portfolio_holdings: cachedHoldings } = await localGet(['my_portfolio_holdings']);
+      
+      if (!cachedHoldings || Object.keys(cachedHoldings).length === 0) {
+        ewAutoRefreshStatus.textContent = 'Cache vazio. Atualize.';
+        await sessionSet({ [REFRESH_KEY]: false });
+        ewRefreshAlert.style.display = 'none';
+        ewAutoRefresh.textContent = 'Iniciar Verificação';
+        return;
+      }
+
+      const pageHoldings = readHoldingsFromPage(document);
+      const changes = [];
+
+      for (const ticker in cachedHoldings) {
+        if (pageHoldings[ticker]) {
+          const cachedPrice = cachedHoldings[ticker].price;
+          const pagePrice = pageHoldings[ticker].price;
+
+          if (Number.isFinite(cachedPrice) && Number.isFinite(pagePrice) && Math.abs(cachedPrice - pagePrice) > 0.001) {
+            changes.push({
+              ticker,
+              oldPrice: cachedPrice,
+              newPrice: pagePrice,
+              timestamp: new Date().toISOString(),
+            });
+          }
+        }
+      }
+
+      if (changes.length > 0) {
+        // Changes detected. Log them, update cache, and continue the loop.
+        ewAutoRefreshStatus.textContent = 'Preços atualizados!';
+
+        // Update and show the floating panel
+        ewRefreshAlert.style.display = 'block';
+        ewRefreshCountdown.textContent = 'Preços alterados detectados! Continuando...';
+        ewRefreshCountdown.style.fontWeight = 'bold';
+        ewRefreshCountdown.style.color = '#03ab95';
+
+        // Build and display the change log
+        const logHTML = `
+          <div style="font-weight:bold; margin-bottom:5px;">Alterações Detectadas:</div>
+          <table style="width:100%; font-size:12px; border-collapse:collapse;">
+            <thead>
+              <tr>
+                <th style="padding:4px; border-bottom:1px solid #e5e7eb; text-align:left;">Ativo</th>
+                <th style="padding:4px; border-bottom:1px solid #e5e7eb; text-align:right;">Preço Antigo</th>
+                <th style="padding:4px; border-bottom:1px solid #e5e7eb; text-align:right;">Preço Novo</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${changes.map(change => `
+                <tr>
+                  <td style="padding:4px;">${change.ticker}</td>
+                  <td style="padding:4px; text-align:right;">${fmtBRL(change.oldPrice)}</td>
+                  <td style="padding:4px; text-align:right; font-weight:bold; color:#03ab95;">${fmtBRL(change.newPrice)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+          <div style="font-size:10px; color:#6b7280; text-align:right; margin-top:4px;">
+            ${new Date(changes[0].timestamp).toLocaleString('pt-BR')}
+          </div>
+        `;
+        ewRefreshChangeLog.innerHTML = logHTML;
+        ewRefreshChangeLog.style.display = 'block';
+
+        ewUpdateMyStocks.click(); // Atualiza o cache com os novos preços
+
+        // Schedule the next check instead of stopping
+        const nextCheck = new Date(Date.now() + REFRESH_INTERVAL_MS);
+        ewAutoRefreshStatus.textContent = `Preços atualizados! Próxima verificação às ${nextCheck.toLocaleTimeString('pt-BR')}`;
+        refreshTimeoutId = setTimeout(() => location.reload(), REFRESH_INTERVAL_MS);
+        if (countdownIntervalId) clearInterval(countdownIntervalId);
+        countdownIntervalId = setInterval(() => {
+          const remaining = Math.max(0, nextCheck.getTime() - Date.now());
+          const minutes = String(Math.floor(remaining / 60000)).padStart(2, '0');
+          const seconds = String(Math.floor((remaining % 60000) / 1000)).padStart(2, '0');
+          ewRefreshCountdown.textContent = `Próxima atualização em: ${minutes}:${seconds}`;
+          // After the first second, reset the style to normal for the countdown
+          ewRefreshCountdown.style.fontWeight = 'normal';
+          ewRefreshCountdown.style.color = '#374151';
+        }, 1000);
+      } else {
+        ewRefreshAlert.style.display = 'block';
+        ewRefreshStockList.innerHTML = `
+          <table style="width:100%; font-size:12px; border-collapse:collapse;">
+            <thead style="text-align:left;">
+              <tr>
+                <th style="padding:4px; border-bottom:1px solid #e5e7eb;">Ativo</th>
+                <th style="padding:4px; border-bottom:1px solid #e5e7eb; text-align:right;">Preço em Cache</th>
+                <th style="padding:4px; border-bottom:1px solid #e5e7eb; text-align:right;">Preço Atual</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${Object.entries(cachedHoldings).map(([ticker, data]) => {
+                const currentPageHolding = pageHoldings[ticker];
+                const currentPrice = currentPageHolding ? currentPageHolding.price : NaN;
+                return `
+                  <tr>
+                    <td style="padding:4px;">${ticker}</td>
+                    <td style="padding:4px; text-align:right;">${fmtBRL(data.price)}</td>
+                    <td style="padding:4px; text-align:right;">${Number.isFinite(currentPrice) ? fmtBRL(currentPrice) : '-'}</td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+        `;
+        const nextCheck = new Date(Date.now() + REFRESH_INTERVAL_MS);
+        ewAutoRefreshStatus.textContent = `Próxima verificação às ${nextCheck.toLocaleTimeString('pt-BR')}`;
+        refreshTimeoutId = setTimeout(() => location.reload(), REFRESH_INTERVAL_MS);
+        countdownIntervalId = setInterval(() => {
+          const remaining = Math.max(0, nextCheck.getTime() - Date.now());
+          const minutes = String(Math.floor(remaining / 60000)).padStart(2, '0');
+          const seconds = String(Math.floor((remaining % 60000) / 1000)).padStart(2, '0');
+          ewRefreshCountdown.textContent = `Próxima atualização em: ${minutes}:${seconds}`;
+        }, 1000);
+      }
+    }
+
+    ewAutoRefresh.addEventListener('click', async () => {
+      ewAutoRefresh.disabled = true;
+      const { [REFRESH_KEY]: isRunning } = await sessionGet([REFRESH_KEY]);
+      if (isRunning) {
+        if (refreshTimeoutId) clearTimeout(refreshTimeoutId);
+        if (countdownIntervalId) clearInterval(countdownIntervalId);
+        await sessionSet({ [REFRESH_KEY]: false });
+        handleAutoRefresh(); // Update UI to stopped state
+      } else {
+        // Reset UI from previous run before starting a new one
+        ewRefreshAlert.style.display = 'none';
+        ewRefreshChangeLog.style.display = 'none';
+        ewRefreshChangeLog.innerHTML = '';
+        ewRefreshCountdown.style.fontWeight = 'normal';
+        ewRefreshCountdown.style.color = '#374151';
+        ewRefreshCount.textContent = '';
+
+        const { my_portfolio_holdings: cachedHoldings } = await localGet(['my_portfolio_holdings']);
+        if (!cachedHoldings || Object.keys(cachedHoldings).length === 0) {
+          alert('Para iniciar a verificação, primeiro clique em "Atualizar Minhas Ações" para criar um cache dos preços atuais.');
+          ewAutoRefresh.disabled = false;
+          return;
+        }
+        await sessionSet({ [REFRESH_KEY]: true, [REFRESH_COUNT_KEY]: 0 });
+        location.reload();
+      }
+    });
 
     function csvEscape(value) {
       if (value == null) return '';
@@ -1848,6 +2120,7 @@
       applyCollapseState(planCollapsed);
       applySellCollapseState(sellCollapsed);
       ewSellShowCurrency.checked = showCurrency;
+      handleAutoRefresh();
     });
 
     // Load initial mode and source
