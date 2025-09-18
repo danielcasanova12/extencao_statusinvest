@@ -1,11 +1,12 @@
 {
   "manifest_version": 3,
-  "name": "StatusInvest Latest Panel",
-  "version": "0.1.0",
-  "description": "Injeta um painel no StatusInvest com dados da sua API",
+  "name": "StatusInvest Tools",
+  "version": "2.3.2",
+  "description": "Adiciona colunas e painéis de análise na página de patrimônio do StatusInvest.",
   "action": {
     "default_popup": "popup.html"
   },
+  "options_page": "options.html",
   "background": {
     "service_worker": "bg.js"
   },
@@ -14,5 +15,21 @@
   ],
   "host_permissions": [
     "https://*.vercel.app/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://statusinvest.com.br/acoes/busca-avancada*"
+      ],
+      "js": ["cs-si-download.js"],
+      "run_at": "document_idle"
+      
+    },
+    {
+      "matches": [
+        "https://statusinvest.com.br/carteira/patrimonio*"
+      ],
+      "js": ["content.js"]
+    }
   ]
 }

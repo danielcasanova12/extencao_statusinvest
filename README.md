@@ -1,3 +1,4 @@
+# Projeto: StatusInvest Tools (API + Extensão MV3)
 Projeto: StatusInvest Tools (API + Extensão MV3)
 
 Resumo
@@ -13,6 +14,9 @@ api/
   fm-ranks.js                    # { code, final_rank } de ranking_magic_checklist
   fm-last-updated.js             # last_updated do ranking
   i10-scores.js                  # { code, i10_score[, i10_rank] }
+  formulamagica/
+    calcular.js                  # Endpoint principal que calcula a FM a partir de um CSV
+    from-inv10.js                # Endpoint que recalcula a FM com base nos dados do Inv10
   checklist.js                   # MERGE ranking_magic_checklist + statusinvest_latest (PRECO)
 extension/
   bg.js                          # service worker: chama a API e responde ao content
@@ -20,6 +24,7 @@ extension/
   manifest.json                  # MV3 (permissões e matches)
 package.json
 README.md
+.env.example                     # Arquivo de exemplo para variáveis de ambiente da API
 ```
 
 Banco (esperado)
@@ -175,5 +180,6 @@ Passo a passo: Extensão no Chrome
 4) CORS
 - A API já libera CORS para `https://statusinvest.com.br` e para origens `chrome-extension://...` (service worker e content).
 - Se mudar domínios ou precisar liberar outro site, ajuste a lista em `api/statusinvest-latest.js`.
-#   e x t e n c a o _ s t a t u s i n v e s t  
+#   e x t e n c a o _ s t a t u s i n v e s t 
+ 
  

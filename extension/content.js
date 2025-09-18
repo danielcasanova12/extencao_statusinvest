@@ -143,6 +143,85 @@
     const n = parseInt(s, 10);
     return Number.isFinite(n) ? n : NaN;
   }
+  function fmtBRL(n) {
+    if (n == null || !Number.isFinite(n)) return 'R$ 0,00';
+    try { return n.toLocaleString('pt-BR', { style:'currency', currency:'BRL' }); }
+    catch { return `R$ ${n.toFixed(2)}`; }
+  }
+  function fmtNumberBR(n) {
+    if (n == null || !Number.isFinite(n)) return '0,00';
+    try {
+      return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    } catch {
+      return n.toFixed(2).replace('.', ',');
+    }
+  }
+
+  function getPortfolioCostBasis() {
+    let sum = 0;
+    for (const r of findBodyRows()) {
+        const avgPriceTd = r.querySelector('td[data-key="unitValue"]');
+        const qtyTd = r.querySelector('td[data-key="quantity"]');
+        let avgPrice = NaN;
+        if (avgPriceTd) {
+            const t = avgPriceTd.getAttribute('title');
+            avgPrice = Number(t);
+            if (!Number.isFinite(avgPrice)) avgPrice = parseMoneyBR(avgPriceTd.textContent);
+        }
+        const qty = qtyTd ? (Number(qtyTd.getAttribute('title')) || parseIntBR(qtyTd.textContent)) : NaN;
+        if (Number.isFinite(avgPrice) && Number.isFinite(qty)) {
+            sum += avgPrice * qty;
+        }
+    }
+    return sum;
+  }
+
+  function getStocksPortfolioTotal() {
+    const acoesHeader = findAcoesHeaderRoot();
+    if (acoesHeader) {
+        // The total value is usually in a sensitive field inside the header
+        const totalSpan = acoesHeader.querySelector('span.sensitive-field');
+        if (totalSpan) {
+            const val = parseMoneyBR(totalSpan.textContent);
+            if (Number.isFinite(val) && val > 0) {
+                return val;
+            }
+        }
+    }
+    
+    // Fallback to summing rows if header total is not found
+    let sum = 0;
+    for (const r of findBodyRows()) { // findBodyRows() targets the stocks table
+      const priceTd = r.querySelector('td[data-key="price"]');
+      const qtyTd = r.querySelector('td[data-key="quantity"]');
+      let price = NaN;
+      if (priceTd) {
+        const t = priceTd.getAttribute('title');
+        price = Number(t);
+        if (!Number.isFinite(price)) price = parseMoneyBR(priceTd.textContent);
+      }
+      const qty = qtyTd ? (Number(qtyTd.getAttribute('title')) || parseIntBR(qtyTd.textContent)) : NaN;
+      if (Number.isFinite(price) && Number.isFinite(qty)) sum += price * qty;
+    }
+    return sum > 0 ? sum : NaN;
+  }
+
+  function getStocksProfitLossBRL() {
+    const acoesHeader = findAcoesHeaderRoot();
+    if (!acoesHeader) return NaN;
+
+    // The profit/loss is in a div with class 'total-1' inside the header
+    const total1Div = acoesHeader.querySelector('.total-1');
+    if (!total1Div) return NaN;
+
+    // Inside it, a small tag contains a span with the value
+    const valueSpan = total1Div.querySelector('small.sensitive-field span.fw-700');
+    if (!valueSpan) return NaN;
+    
+    // The text content is something like " -231,87"
+    const value = parseMoneyBR(valueSpan.textContent);
+    return value;
+  }
 
   function getPortfolioTotal() {
     // Try header total first
@@ -177,25 +256,22 @@
     if (fmCell) {
       const rank = code && ranksMap ? ranksMap[code] : undefined;
       // reset styles first
-      fmCell.style.backgroundColor = '';
+      fmCell.style.setProperty('background-color', '#fff', 'important');
       fmCell.style.color = '';
       fmCell.style.fontWeight = '';
 
       if (rank == null || Number.isNaN(rank)) {
         fmCell.textContent = '-';
-        // whole square red when no data
-        fmCell.style.backgroundColor = '#ffebee';
+        // No data: red text
         fmCell.style.color = '#c62828';
         fmCell.style.fontWeight = '700';
       } else if (Number(rank) <= 20) {
         fmCell.textContent = String(rank);
-        fmCell.style.color = '#2e7d32'; // green text
-        fmCell.style.backgroundColor = '#e8f5e9'; // subtle green background
+        fmCell.style.color = '#03ab95'; // green text
         fmCell.style.fontWeight = '700';
       } else {
         fmCell.textContent = String(rank);
         fmCell.style.color = '#c62828'; // red text
-        fmCell.style.backgroundColor = '#ffebee'; // red background
         fmCell.style.fontWeight = '700';
       }
     }
@@ -203,6 +279,7 @@
       const score = code && i10Map ? i10Map[code] : undefined;
       i10Cell.textContent = score != null ? String(score) : '-';
       i10Cell.style.color = score != null ? '#1565c0' : '#9e9e9e';
+      i10Cell.style.setProperty('background-color', '#fff', 'important');
     }
   }
 
@@ -248,13 +325,54 @@
         ranksMap = {};
       }
       enhanceCb();
-      // Fetch last-updated in a dedicated call
-      chrome.runtime.sendMessage({ type: 'FETCH_FM_LAST_UPDATED' }, (lu) => {
-        if (lu && lu.ok && lu.json) {
-          const ts = lu.json.last_updated || lu.json.generated_at;
-          if (ts) placeLastUpdatedIndicator(ts);
+      // Fetch last-updated for all tables
+      chrome.runtime.sendMessage({ type: 'FETCH_LAST_UPDATES' }, (lu) => {
+        if (lu && lu.ok && lu.json && lu.json.updates) {
+          const updates = lu.json.updates;
+          const now = new Date();
+
+          let priceUpdateInfo = null;
+          let oldestUpdateInfo = { table: null, date: null, days: -1, isoTs: null };
+
+          // Find both price update and oldest update
+          for (const table in updates) {
+            const isoTs = updates[table];
+            if (isoTs) {
+              const date = new Date(isoTs);
+              const diffTime = now - date;
+              const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+
+              // Check for price table (e.g., tb_statusinvest)
+              if (/statusinvest/i.test(table)) {
+                priceUpdateInfo = {
+                  tableName: 'Preços',
+                  date: date,
+                  days: diffDays,
+                  isoTs: isoTs,
+                };
+              }
+
+              // Check for oldest
+              if (oldestUpdateInfo.date === null || date < oldestUpdateInfo.date) {
+                oldestUpdateInfo = { table, date, days: diffDays, isoTs: isoTs };
+              }
+            }
+          }
+
+          // Decide what to display: prioritize price update info
+          if (priceUpdateInfo) {
+            placeLastUpdatedIndicator(priceUpdateInfo.tableName, priceUpdateInfo.days, priceUpdateInfo.isoTs, true);
+          } else if (oldestUpdateInfo.date) {
+            // If no price info, show the oldest as before
+            placeLastUpdatedIndicator(oldestUpdateInfo.table, oldestUpdateInfo.days, oldestUpdateInfo.isoTs, false);
+          }
+
+          // Alert should always be based on the absolute oldest data
+          if (oldestUpdateInfo.date) {
+            showOutdatedDataAlert(oldestUpdateInfo.isoTs);
+          }
         } else {
-          console.warn('[content] fm-last-updated request failed:', lu?.error || 'unknown');
+          console.warn('[content] last-updates request failed:', lu?.error || 'unknown');
         }
       });
 
@@ -272,11 +390,125 @@
     });
   }
 
+  const OUTDATED_ALERT_STORAGE_KEY = 'outdated_alert_last_shown';
+  const OUTDATED_ALERT_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+
+  function showOutdatedDataAlert(isoTs) {
+    if (!isoTs) return;
+
+    const date = new Date(isoTs);
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const startOfDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    const diffTime = startOfToday - startOfDate;
+    const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+
+    if (diffDays < 30) {
+      return; // Data is not outdated, do nothing.
+    }
+
+    chrome.storage.local.get([OUTDATED_ALERT_STORAGE_KEY], (result) => {
+      if (chrome.runtime.lastError) {
+        console.error('[StatusInvest Ext] Error getting storage:', chrome.runtime.lastError);
+        return;
+      }
+      const lastShown = result[OUTDATED_ALERT_STORAGE_KEY];
+      const nowMs = Date.now();
+
+      if (lastShown && (nowMs - lastShown < OUTDATED_ALERT_INTERVAL_MS)) {
+        // Alert was shown recently, do nothing.
+        return;
+      }
+
+      // Time to show the alert.
+      const alertId = 'fm-outdated-data-alert';
+      if (document.getElementById(alertId)) return; // Already visible
+
+      const alertDiv = document.createElement('div');
+      alertDiv.id = alertId;
+      Object.assign(alertDiv.style, {
+        position: 'fixed',
+        top: '20px',
+        right: '20px',        
+        backgroundColor: '#03ab95',
+        color: 'white',
+        padding: '16px',
+        borderRadius: '8px',
+        boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
+        zIndex: '99999',
+        maxWidth: '380px',
+        fontFamily: 'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif',
+        fontSize: '14px',
+        lineHeight: '1.5',
+      });
+
+      const message = document.createElement('p');
+      message.textContent = "Seus dados estão desatualizados há mais de 30 dias. Para garantir a precisão da análise, baixe o novo CSV do StatusInvest e execute o processo 'TODOS' na extensão.";
+      message.style.margin = '0';
+      message.style.paddingRight = '20px'; // space for close button
+
+      const closeButton = document.createElement('button');
+      closeButton.innerHTML = '&times;'; // Use a multiplication sign for 'X'
+      Object.assign(closeButton.style, { position: 'absolute', top: '8px', right: '10px', background: 'transparent', border: 'none', color: 'white', cursor: 'pointer', fontSize: '20px', fontWeight: 'bold', padding: '0', lineHeight: '1', opacity: '0.8' });
+      closeButton.onmouseover = () => { closeButton.style.opacity = '1'; };
+      closeButton.onmouseout = () => { closeButton.style.opacity = '0.8'; };
+      closeButton.onclick = () => { alertDiv.remove(); };
+
+      alertDiv.appendChild(message);
+      alertDiv.appendChild(closeButton);
+      document.body.appendChild(alertDiv);
+
+      // Update the timestamp in storage.
+      chrome.storage.local.set({ [OUTDATED_ALERT_STORAGE_KEY]: nowMs });
+    });
+  }
+
   let headerIndicatorTries = 0;
-  function placeLastUpdatedIndicator(isoTs) {
+  function placeLastUpdatedIndicator(tableName, daysAgo, isoTs, isPriceUpdate = false) {
     try {
       const id = 'fm-last-updated-indicator';
-      const text = `Atualizado: ${formatBrazil(isoTs)}`;
+      if (!tableName || daysAgo < 0) return;
+
+      // --- Start of color logic ---
+      const diffDays = daysAgo;
+
+      let bgColor = '';
+      let textColor = '#777';
+      let fontWeight = '400';
+
+      if (diffDays >= 30) {
+        // Red: 30+ days old
+        bgColor = '#ffebee';
+        textColor = '#c62828';
+        fontWeight = '700';
+      } else if (diffDays >= 15) {
+        // Yellow: 15-29 days old
+        bgColor = '#fff7ed';
+        textColor = '#92400e';
+        fontWeight = '500';
+      } else {
+        // Green: up to 14 days old
+        bgColor = '#e6f7f5';
+        textColor = '#03ab95';
+      }
+
+      const daysText = diffDays === 0 ? 'hoje' : (diffDays === 1 ? '1 dia atrás' : `${diffDays} dias atrás`);
+      const text = isPriceUpdate
+        ? `Preços atualizados ${daysText}`
+        : `Dados mais antigos (${tableName}) atualizados ${daysText}`;
+      
+      const applyStyles = (el) => {
+        if (!el) return;
+        el.style.fontWeight = fontWeight;
+        el.style.color = textColor;
+        el.style.backgroundColor = bgColor;
+        el.style.padding = '2px 6px';
+        el.style.borderRadius = '4px';
+        el.textContent = `• ${text}`;
+        el.title = `Data exata: ${formatBrazil(isoTs)}`;
+      };
+      // --- End of color logic ---
+
       let placed = false;
 
       // 1) Preferir adicionar como uma "coluna" dentro do container do título AÇÕES
@@ -286,22 +518,18 @@
         if (!wrapper) {
           wrapper = document.createElement('div');
           wrapper.id = id;
-          // Mantém alinhamento como uma coluna do flex container
           wrapper.style.display = 'flex';
           wrapper.style.alignItems = 'center';
           wrapper.style.marginLeft = '12px';
 
           const label = document.createElement('small');
-          label.style.fontWeight = '400';
-          label.style.color = '#777';
-          label.textContent = `• ${text}`;
+          applyStyles(label);
           wrapper.appendChild(label);
 
           acoesContainer.appendChild(wrapper);
         } else {
-          // atualiza o texto do primeiro child
           const lbl = wrapper.firstChild || document.createElement('small');
-          lbl.textContent = `• ${text}`;
+          applyStyles(lbl);
           if (!wrapper.firstChild) wrapper.appendChild(lbl);
         }
         placed = true;
@@ -317,14 +545,12 @@
             wrapper.style.alignItems = 'center';
             wrapper.style.marginLeft = '12px';
             const label = document.createElement('small');
-            label.style.fontWeight = '400';
-            label.style.color = '#777';
-            label.textContent = `• ${text}`;
+            applyStyles(label);
             wrapper.appendChild(label);
             headerRoot.appendChild(wrapper);
           } else {
             const lbl = wrapper.firstChild || document.createElement('small');
-            lbl.textContent = `• ${text}`;
+            applyStyles(lbl);
             if (!wrapper.firstChild) wrapper.appendChild(lbl);
           }
           placed = true;
@@ -337,14 +563,12 @@
               node = document.createElement('small');
               node.id = id;
               node.style.marginLeft = '8px';
-              node.style.fontWeight = '400';
-              node.style.color = '#777';
-              node.style.display = 'block';
+              node.style.display = 'inline-block';
               node.style.marginTop = '2px';
-              node.textContent = `• ${text}`;
+              applyStyles(node);
               acoesDiv.appendChild(node);
             } else {
-              node.textContent = `• ${text}`;
+              applyStyles(node);
             }
             placed = true;
           }
@@ -360,13 +584,11 @@
             node = document.createElement('small');
             node.id = id;
             node.style.marginLeft = '8px';
-            node.style.fontWeight = '400';
-            node.style.color = '#777';
             node.style.display = 'inline-block';
-            node.textContent = `• ${text}`;
+            applyStyles(node);
             anchor.insertAdjacentElement('afterend', node);
           } else {
-            node.textContent = `• ${text}`;
+            applyStyles(node);
           }
           placed = true;
         }
@@ -374,7 +596,7 @@
 
       if (!placed && headerIndicatorTries < 10) {
         headerIndicatorTries += 1;
-        setTimeout(() => placeLastUpdatedIndicator(isoTs), 500);
+        setTimeout(() => placeLastUpdatedIndicator(tableName, daysAgo, isoTs), 500);
       }
     } catch {}
   }
@@ -435,6 +657,1525 @@
     return null;
   }
 
+  function setShowAllOnPagination() {
+    return new Promise((resolve, reject) => {
+      try {
+        // 1. Find the "AÇÕES" group.
+        let acoesGroup = null;
+        // Use a more specific selector for the "AÇÕES" header
+        const acoesH3 = document.querySelector('.collapsible-header h3.text-category-1');
+        if (acoesH3) {
+          acoesGroup = acoesH3.closest('li.group');
+        }
+
+        if (!acoesGroup) {
+          console.warn('[StatusInvest Ext] "AÇÕES" group not found. Cannot set pagination to "TODOS".');
+          resolve();
+          return;
+        }
+
+        // 2. Expand it if it's not active.
+        if (!acoesGroup.classList.contains('active')) {
+          const header = acoesGroup.querySelector('.collapsible-header');
+          if (header) header.click();
+        }
+  
+        // 3. Wait for animations and DOM updates.
+        setTimeout(() => {
+          try {
+            // 4. Find the pagination control within the "AÇÕES" group and set it to "TODOS".
+            const control = acoesGroup.querySelector('.pagination-control');
+            if (control) {
+              const selectElement = control.querySelector('select[data-formselect]');
+              // Check if "TODOS" is not already selected. The value for TODOS is -1.
+              if (selectElement && selectElement.value !== '-1') {
+                // This is a Materialize CSS dropdown. We need to find the generated <ul> and click the <li>.
+                const dropdownInput = control.querySelector('input.select-dropdown');
+                if (dropdownInput) {
+                  const dropdownId = dropdownInput.dataset.target;
+                  if (dropdownId) {
+                    const dropdownUl = document.getElementById(dropdownId);
+                    if (dropdownUl) {
+                      const todosLi = Array.from(dropdownUl.querySelectorAll('li > span'))
+                                           .find(span => span.textContent.trim().toUpperCase() === 'TODOS')
+                                           ?.parentElement;
+                      // Click if it exists and is not already selected
+                      if (todosLi && !todosLi.classList.contains('selected')) {
+                        todosLi.click();
+                      }
+                    }
+                  }
+                }
+              }
+            } else {
+              console.warn('[StatusInvest Ext] Pagination control for "AÇÕES" not found inside its group.');
+            }
+            resolve(); // Promise resolves successfully
+          } catch (e) { reject(e); }
+        }, 1000); // Wait 1s for animations
+      } catch (e) { reject(e); }
+    });
+  }
+  
+  // Floating Shadow DOM panel: Rebalance dates manager
+  // Idempotent and robust to SPA rerenders
+  function initRebalancePanel() {
+    const HOST_ID = 'rebalance-panel-host';
+    if (document.getElementById(HOST_ID)) return; // prevent duplicates
+  
+    const host = document.createElement('div');
+    host.id = HOST_ID;
+    const anchor = document.getElementById('cashposition-result');
+    if (anchor && anchor.parentElement) anchor.insertAdjacentElement('afterend', host);
+    else document.body.appendChild(host);
+  
+    const root = host.attachShadow({ mode: 'open' });
+    const wrap = document.createElement('div');
+    wrap.innerHTML = `
+      <style>
+        :host { all: initial; display: block; width: 100%; }
+        .card { width: 100%; background: #fff; color: #1f2937; border: 1px solid #e5e7eb; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; margin: 12px 0; }      
+        .header { display:flex; align-items:center; justify-content:space-between; padding: 10px 12px; border-bottom: 1px solid #f3f4f6; background:#03ab95; color: white; border-top-left-radius:10px; border-top-right-radius:10px; }
+        .title { font-weight: 700; font-size: 14px; margin: 0; color: white; }
+        .body { padding: 10px 12px; }
+        .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px; }
+        label { font-size: 12px; color:#374151; margin-bottom: 4px; display: block; }
+        input[type="date"], input[type="text"], select { padding:6px 8px; border:1px solid #e5e7eb; border-radius:6px; font-size:12px; background:#fff; box-sizing: border-box; width: 100%; }
+        button { padding:6px 10px; border:1px solid #d1d5db; background:#03ab95; color:#fff; border-radius:6px; font-size:12px; cursor:pointer; }
+        button.secondary { background:#e6f7f5; color:#028a7a; border-color:#beebe4; }
+        button.danger { background:#fee2e2; color:#991b1b; border-color:#fecaca; }
+        .table-wrap { max-height: 260px; overflow:auto; border-top:1px solid #f3f4f6; margin-top:8px; }
+        table { width:100%; border-collapse:collapse; font-size:12px; }
+        thead th { position: sticky; top: 0; background:#e6f7f5; z-index:1; text-align:left; padding:6px 8px; border-bottom:1px solid #beebe4; font-weight: 600; color: #028a7a; }
+        thead th.num { text-align: right; }
+        tbody td { padding:6px 8px; border-bottom:1px solid #f3f4f6; vertical-align:middle; }
+        .status-late { color:#c62828; font-weight:700; }
+        .status-today { color:#03ab95; font-weight:700; }
+        .status-soon { color:#92400e; }
+        .banner { background:#fff7ed; color:#7c2d12; border:1px solid #fed7aa; border-radius:6px; padding:6px 8px; margin: 6px 0 8px 0; display:none; }
+        .actions { display:flex; gap:6px; }
+        .muted { color:#6b7280; }      
+        .num { text-align: right; }
+        .status-profit { color: #03ab95; font-weight: 700; }
+        .status-loss { color: #c62828; font-weight: 700; }
+        /* Late highlighting: whole row/cells in red background */
+        .row-late td { background:#ffebee; }
+        .row-late td.next, .row-late td.status { color:#c62828; font-weight:700; }
+      </style>
+      <div class="card" part="card">
+        <div class="header"><h3 class="title">Quando foi o último rebalanceamento?</h3></div>
+        <div class="body">
+          <div class="row">
+            <div style="flex: 1;">
+              <label for="lastRebDate">Último rebalance</label>
+              <input type="date" id="lastRebDate" />
+            </div>
+            <div style="flex: 0.5;">
+              <label for="rebalanceInterval">Intervalo (meses)</label>
+              <select id="rebalanceInterval">
+                <option value="3">3</option>
+                <option value="6">6</option>
+                <option value="9">9</option>
+                <option value="12">12</option>
+              </select>
+            </div>
+            <div style="display:flex; align-items:flex-end; flex: 0.5;">
+              <button id="addBtn">Adicionar</button>
+            </div>
+          </div>
+          <div class="row" style="margin-top: 12px; align-items: flex-start;">
+            <div style="flex:1;">
+              <label for="currentPosition">Posição atual em ações</label>
+              <input type="text" id="currentPosition" placeholder="R$ 0,00" />
+            </div>
+            <div style="flex:1;">
+              <label for="investedPosition">Posição investida</label>
+              <input type="text" id="investedPosition" placeholder="R$ 0,00" />
+            </div>
+            <div style="flex:1;">
+              <label>Lucro/Prejuízo (%)</label>
+              <div id="profitLoss" style="padding: 7px 8px; font-weight: bold; font-size: 12px; border: 1px solid transparent; border-radius: 6px;">-</div>
+            </div>
+          </div>
+          <div id="banner" class="banner">⚠️ Está chegando a data do próximo rebalanceamento</div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Data</th>
+                  <th>Próximo rebalance</th>
+                  <th>Status</th>
+                  <th class="num">Pos. Atual</th>
+                  <th class="num">Pos. Investida</th>
+                  <th class="num">Lucro/Prej. (%)</th>
+                  <th>Ações</th>
+                </tr>
+              </thead>
+              <tbody id="listBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    `;
+  
+    root.appendChild(wrap);
+  
+    const $ = (sel) => root.querySelector(sel);
+    const STORAGE_KEY = 'rebalance_dates';
+  
+    const inputCurrentPos = $('#currentPosition');
+    const inputInvestedPos = $('#investedPosition');
+    const profitLossDisplay = $('#profitLoss');
+    const inputLast = $('#lastRebDate');
+    const intervalSel = $('#rebalanceInterval');
+    const addBtn = $('#addBtn');
+    const listBody = $('#listBody');
+    const banner = $('#banner');
+  
+    function toLocalDateInputValue(d) {
+      const dt = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
+      return dt.toISOString().slice(0, 10);
+    }
+    function startOfDayLocal(d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate()); }
+    function fmtDateBR(d) {
+      const dd = String(d.getDate()).padStart(2, '0');
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const yyyy = d.getFullYear();
+      return `${dd}:${mm}:${yyyy}`;
+    }
+    function parseISODateAsLocal(isoDateString) {
+        if (!isoDateString) return new Date(NaN);
+        // "YYYY-MM-DD" -> cria data à meia-noite local, evitando desvios de fuso horário.
+        const parts = isoDateString.split('-').map(Number);
+        return new Date(parts[0], parts[1] - 1, parts[2]);
+    }
+    function diffDays(a, b) { const A = startOfDayLocal(a).getTime(); const B = startOfDayLocal(b).getTime(); return Math.round((B - A) / 86400000); }
+    function addMonthsSafe(date, months) {
+      const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+      const targetMonth = d.getMonth() + months;
+      const lastDayTarget = new Date(d.getFullYear(), targetMonth + 1, 0).getDate();
+      const day = Math.min(d.getDate(), lastDayTarget);
+      return new Date(d.getFullYear(), targetMonth, day);
+    }
+    function loadDates() {
+      return new Promise((resolve) => {
+        try { chrome.storage.sync.get([STORAGE_KEY], (res) => resolve(Array.isArray(res?.[STORAGE_KEY]) ? res[STORAGE_KEY] : [])); }
+        catch { resolve([]); }
+      });
+    }
+    function saveDates(arr) {
+      return new Promise((resolve) => {
+        try { chrome.storage.sync.set({ [STORAGE_KEY]: arr }, () => resolve()); }
+        catch { resolve(); }
+      });
+    }
+    let intervalMonths = 3;
+    function nextRebalance(dateISO) { return addMonthsSafe(parseISODateAsLocal(dateISO), intervalMonths); }
+    function computeStatus(next, current) {
+      const dd = diffDays(startOfDayLocal(current), startOfDayLocal(next));
+      if (dd === 0) return { text: 'Hoje!', cls: 'status-today', late: false, soon: true };
+      if (dd < 0) return { text: `Atrasado ${Math.abs(dd)} dias`, cls: 'status-late', late: true, soon: false };
+      return { text: `Faltam ${dd} dias`, cls: dd <= 10 ? 'status-soon' : '', late: false, soon: dd <= 10 };
+    }
+    function renderList(currentDate) {
+      loadDates().then((arr) => {
+        // Ordena a lista para que o item adicionado mais recentemente (maior ID) apareça primeiro.
+        arr.sort((a, b) => (b.id || 0) - (a.id || 0));
+
+        listBody.innerHTML = '';
+        // Para o banner, encontre o item com a data de rebalanceamento mais recente
+        if (arr.length) {
+          // Cria uma cópia rasa para ordenar para a lógica do banner sem afetar a matriz principal
+          const latestRebalanceItem = [...arr].sort((a, b) => new Date(b.dateISO) - new Date(a.dateISO))[0];
+          if (latestRebalanceItem) {
+            const next = nextRebalance(latestRebalanceItem.dateISO);
+            const dd = diffDays(startOfDayLocal(new Date()), next);
+            banner.style.display = dd > 0 && dd <= 10 ? 'block' : (dd === 0 ? 'block' : 'none');
+            banner.textContent = dd === 0 ? 'Hoje! Dia do próximo rebalanceamento' : '⚠️ Está chegando a data do próximo rebalanceamento';
+          }
+        } else { banner.style.display = 'none'; }
+
+        arr.forEach((item) => {
+          const orig = parseISODateAsLocal(item.dateISO);
+          const next = nextRebalance(item.dateISO);
+          const { text, cls, late } = computeStatus(next, currentDate);
+          
+          const currentPos = item.currentPosition;
+          const investedPos = item.investedPosition;
+          let profitLoss = NaN;
+          if (Number.isFinite(currentPos) && Number.isFinite(investedPos) && investedPos > 0) {
+              profitLoss = ((currentPos / investedPos) - 1) * 100;
+          }
+          const profitLossText = Number.isFinite(profitLoss) ? `${profitLoss.toFixed(2)}%` : '-';
+          const profitLossClass = Number.isFinite(profitLoss) ? (profitLoss >= 0 ? 'status-profit' : 'status-loss') : '';
+  
+          const tr = document.createElement('tr');
+          tr.dataset.id = String(item.id);
+          tr.innerHTML = `
+            <td class="orig">${fmtDateBR(orig)}</td>
+            <td class="next">${fmtDateBR(next)}</td>
+            <td class="status ${cls}">${text}</td>
+            <td class="num current-pos">${Number.isFinite(currentPos) ? fmtBRL(currentPos) : '-'}</td>
+            <td class="num invested-pos">${Number.isFinite(investedPos) ? fmtBRL(investedPos) : '-'}</td>
+            <td class="num profit-loss ${profitLossClass}">${profitLossText}</td>
+            <td class="actions">
+              <button class="secondary btn-edit">Editar</button>
+              <button class="danger btn-del">Excluir</button>
+            </td>
+          `;
+          if (late) tr.classList.add('row-late');
+          listBody.appendChild(tr);
+        });
+      });
+    }
+    function refresh() { const current = new Date(); renderList(current); }
+    // Prefill Último rebalance com hoje por padrão
+    inputLast.value = toLocalDateInputValue(new Date());
+  
+    function updateProfitLoss() {
+        const currentVal = parseMoneyBR(inputCurrentPos.value);
+        const investedVal = parseMoneyBR(inputInvestedPos.value);
+        if (Number.isFinite(currentVal) && Number.isFinite(investedVal) && investedVal > 0) {
+            const perc = ((currentVal / investedVal) - 1) * 100;
+            profitLossDisplay.textContent = `${perc.toFixed(2)}%`;
+            profitLossDisplay.style.color = perc >= 0 ? '#03ab95' : '#c62828';
+        } else {
+            profitLossDisplay.textContent = '-';
+            profitLossDisplay.style.color = '#6b7280';
+        }
+    }
+  
+    inputCurrentPos.addEventListener('input', updateProfitLoss);
+    inputInvestedPos.addEventListener('input', updateProfitLoss);
+    inputCurrentPos.addEventListener('change', (e) => {
+        const n = parseMoneyBR(e.target.value);
+        if (Number.isFinite(n)) e.target.value = fmtBRL(n); else e.target.value = '';
+    });
+    inputInvestedPos.addEventListener('change', (e) => {
+        const n = parseMoneyBR(e.target.value);
+        if (Number.isFinite(n)) e.target.value = fmtBRL(n); else e.target.value = '';
+    });
+  
+    // Auto-fill on init
+    const detectedStocksTotal = getStocksPortfolioTotal();
+    const detectedProfitLoss = getStocksProfitLossBRL();
+    let calculatedCostBasis = NaN;
+
+    if (Number.isFinite(detectedStocksTotal) && Number.isFinite(detectedProfitLoss)) {
+      calculatedCostBasis = detectedStocksTotal - detectedProfitLoss;
+    }
+    
+    // Fallback to summing rows if DOM scraping fails
+    const finalCostBasis = Number.isFinite(calculatedCostBasis) ? calculatedCostBasis : getPortfolioCostBasis();
+
+    if (Number.isFinite(detectedStocksTotal) && detectedStocksTotal > 0) inputCurrentPos.value = fmtBRL(detectedStocksTotal);
+    if (Number.isFinite(finalCostBasis) && finalCostBasis > 0) inputInvestedPos.value = fmtBRL(finalCostBasis);
+    updateProfitLoss();
+  
+  
+    // Interval persistence
+    const INTERVAL_KEY = 'rebalance_interval_months';
+    function loadInterval() {
+      return new Promise((resolve) => {
+        try {
+          chrome.storage.sync.get([INTERVAL_KEY], (res) => {
+            const v = Number(res?.[INTERVAL_KEY]);
+            resolve([3,6,9,12].includes(v) ? v : 3);
+          });
+        } catch { resolve(3); }
+      });
+    }
+    function saveInterval(v) {
+      return new Promise((resolve) => {
+        try { chrome.storage.sync.set({ [INTERVAL_KEY]: v }, () => resolve()); } catch { resolve(); }
+      });
+    }
+    addBtn.addEventListener('click', async () => {
+      const v = inputLast.value;
+      if (!v) { alert('Selecione a data do último rebalanceamento.'); return; }
+      
+      const currentPosition = parseMoneyBR(inputCurrentPos.value);
+      const investedPosition = parseMoneyBR(inputInvestedPos.value);
+  
+      const list = await loadDates();
+      // Adiciona no início da lista para que o mais recente apareça primeiro
+      list.unshift({ id: Date.now(), dateISO: v, createdAtISO: new Date().toISOString(),
+        currentPosition: Number.isFinite(currentPosition) ? currentPosition : null,
+        investedPosition: Number.isFinite(investedPosition) ? investedPosition : null,
+      });
+      await saveDates(list);
+      // Reset date to today for next entry
+      inputLast.value = toLocalDateInputValue(new Date());
+      refresh();
+    });
+  
+    // Load interval and wire select
+    (async () => {
+      const v = await loadInterval();
+      intervalMonths = v;
+      if (intervalSel) intervalSel.value = String(v);
+      refresh();
+    })();
+    if (intervalSel) {
+      intervalSel.addEventListener('change', async () => {
+        const v = Number(intervalSel.value);
+        intervalMonths = [3,6,9,12].includes(v) ? v : 3;
+        await saveInterval(intervalMonths);
+        refresh();
+      });
+    }
+    // Sem campo de data atual; usa sempre hoje
+    listBody.addEventListener('click', async (ev) => {
+      const btn = ev.target;
+      const tr = btn && btn.closest ? btn.closest('tr') : null;
+      if (!tr) return;
+      const id = Number(tr.dataset.id);
+      if (btn.classList.contains('btn-del')) {
+        if (!confirm('Excluir esta data?')) return;
+        const list = await loadDates();
+        await saveDates(list.filter((x) => Number(x.id) !== id));
+        refresh();
+      }
+      if (btn.classList.contains('btn-edit')) {
+        const list = await loadDates();
+        const idx = list.findIndex((x) => Number(x.id) === id);
+        if (idx === -1) return;
+        const item = list[idx];
+  
+        const tdOrig = tr.querySelector('td.orig');
+        const tdCurrentPos = tr.querySelector('td.current-pos');
+        const tdInvestedPos = tr.querySelector('td.invested-pos');
+        const tdActions = tr.querySelector('td.actions');
+  
+        const createInput = (type, value) => {
+          const input = document.createElement('input');
+          input.type = type;
+          input.value = value;
+          Object.assign(input.style, { padding: '4px 6px', border: '1px solid #e5e7eb', borderRadius: '6px', width: '100%', boxSizing: 'border-box' });
+          return input;
+        };
+  
+        const editInputDate = createInput('date', item.dateISO);
+        const editInputCurrent = createInput('text', Number.isFinite(item.currentPosition) ? fmtBRL(item.currentPosition) : '');
+        const editInputInvested = createInput('text', Number.isFinite(item.investedPosition) ? fmtBRL(item.investedPosition) : '');
+  
+        tdOrig.innerHTML = '';
+        tdOrig.appendChild(editInputDate);
+        tdCurrentPos.innerHTML = '';
+        tdCurrentPos.appendChild(editInputCurrent);
+        tdInvestedPos.innerHTML = '';
+        tdInvestedPos.appendChild(editInputInvested);
+  
+        tdActions.innerHTML = '';
+        const saveBtn = document.createElement('button'); saveBtn.textContent = 'Salvar'; saveBtn.className = 'secondary';
+        const cancelBtn = document.createElement('button'); cancelBtn.textContent = 'Cancelar'; cancelBtn.className = 'danger';
+        tdActions.appendChild(saveBtn); tdActions.appendChild(cancelBtn);
+        
+        saveBtn.addEventListener('click', async () => {
+          const newDate = editInputDate.value;
+          if (!newDate) { alert('Selecione uma data válida.'); return; }
+          const newCurrent = parseMoneyBR(editInputCurrent.value);
+          const newInvested = parseMoneyBR(editInputInvested.value);
+          list[idx].dateISO = newDate;
+          list[idx].currentPosition = Number.isFinite(newCurrent) ? newCurrent : null;
+          list[idx].investedPosition = Number.isFinite(newInvested) ? newInvested : null;
+          await saveDates(list);
+          refresh();
+        });
+        cancelBtn.addEventListener('click', () => { refresh(); });
+      }
+    });
+  
+    refresh();
+  }
+  
+  // Equal-Weight Rebalance Plan panel (Top N from checklist)
+  function initEqualWeightPlanPanel() {
+    const HOST_ID = 'ew-plan-panel-host';
+    if (document.getElementById(HOST_ID)) return;
+  
+    // Find anchor above the main table
+    const tableBody = document.querySelector('.collapsible-body');
+    const host = document.createElement('div');
+    host.id = HOST_ID;
+    if (tableBody && tableBody.parentElement) tableBody.parentElement.insertBefore(host, tableBody);
+    else document.body.insertBefore(host, document.body.firstChild);
+  
+    const root = host.attachShadow({ mode: 'open' });
+    const wrap = document.createElement('div');
+    wrap.innerHTML = `
+      <style>
+        :host { all: initial; display:block; width:100%; }
+        .card { width:100%; background:#fff; color:#1f2937; border:1px solid #e5e7eb; border-radius:10px; box-shadow:0 2px 8px rgba(0,0,0,.08); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; margin: 12px 0; }      
+        .header { display:flex; align-items:center; justify-content:space-between; padding:10px 12px; border-bottom:1px solid #f3f4f6; background:#03ab95; color: white; border-top-left-radius:10px; border-top-right-radius:10px; }
+        .title { font-weight:700; font-size:14px; margin:0; color: white; }
+        .controls { display:flex; flex-direction: column; gap:8px; align-items:flex-end; }
+        .controls-row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; justify-content: flex-end; }
+        .toggle-btn { padding:6px 10px; border:1px solid #beebe4; background:#e6f7f5; color:#028a7a; border-radius:6px; font-size:12px; cursor:pointer; }
+        select, input[type="text"] { padding:6px 8px; border:1px solid #e5e7eb; border-radius:6px; font-size:12px; background:#fff; }
+        .body { padding:10px 12px; }
+        .table-wrap { max-height:420px; overflow:auto; border-top:1px solid #f3f4f6; margin-top:8px; }
+        table { width:100%; border-collapse:collapse; font-size:12px; }
+        thead th { position:sticky; top:0; background:#e6f7f5; z-index:1; text-align:left; padding:6px 8px; border-bottom:1px solid #beebe4; font-weight: 600; color: #028a7a; }
+        tbody td { padding:6px 8px; border-bottom:1px solid #f3f4f6; vertical-align:middle; }
+        .num { text-align:right; }
+        .muted { color:#6b7280; }
+        /* Highlight rows for tickers already in the portfolio */
+        .header.sell-header { background-color: #03ab95; }
+        tr.row-holding td { background:#e6f7f5; }
+        tr.row-holding td:nth-child(2) { color:#03ab95; font-weight:700; }
+        tr.row-sell-selected { background-color: #03ab95; color: white; }
+        tr.row-sell-selected .muted { color: #f0fdfa; }
+        .table-wrap.no-scroll { max-height: none; overflow: visible; }
+        .mode { display:flex; align-items:center; gap:6px; }
+        .mode label { display:flex; align-items:center; gap:4px; cursor:pointer; }
+      </style>
+      <div class="card">
+        <div class="header">
+          <h3 class="title">Plano de Rebalanceamento (Equal-Weight)</h3>
+          <div class="controls">
+            <div class="controls-row">
+              <label>Fonte
+                <select id="ewSource">
+                  <option value="fm" selected>Fórmula Mágica</option>
+                  <option value="fm_inv10">FM + Inv10</option>
+                  <option value="magic_inv10+sum">FM + Inv10 (Soma)</option>
+                </select>
+              </label>
+              <label>Top
+                <select id="ewN">
+                  <option value="5">5</option>
+                  <option value="10" selected>10</option>
+                  <option value="15">15</option>
+                  <option value="20">20</option>
+                  <option value="30">30</option>
+                </select>
+              </label>
+              <label>Total (R$)
+                <input type="text" id="ewTotal" size="12"/>
+              </label>
+              <span class="mode">
+                <label title="Compra com base no orçamento, sem vender posições."><input type="radio" name="ewMode" value="investir" checked /> Investir</label>
+                <label title="Ajusta quantidades para chegar ao alvo por ativo; só considera compras adicionais."><input type="radio" name="ewMode" value="rebalancear" /> Rebalancear</label>
+              </span>
+            </div>
+            <div class="controls-row">
+              <span id="ewAutoRefreshStatus" style="color: white; font-size: 11px; font-style: italic; margin-right: auto;"></span>
+              <button id="ewAutoRefresh" class="toggle-btn" type="button" title="Verificar automaticamente a cada 5 minutos se os preços das ações foram atualizados.">Iniciar Verificação</button>
+              <button id="ewUpdateMyStocks" class="toggle-btn" type="button" title="Exibe todos os ativos e salva a lista da sua carteira para uso nos cálculos.">Atualizar Minhas Ações</button>
+              <button id="ewExportCsv" class="toggle-btn" type="button" title="Baixar tabela em CSV.">Exportar CSV</button>
+              <button id="ewToggle" class="toggle-btn" type="button">Ocultar</button>
+            </div>
+          </div>
+        </div>
+        <div id="ewRefreshAlert" style="display:none; position:fixed; bottom:20px; right:20px; z-index:10000; background:white; border:1px solid #e5e7eb; border-radius:10px; box-shadow:0 4px 12px rgba(0,0,0,.15); width:300px; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;">
+          <div style="padding:10px 12px; background:#03ab95; color:white; border-top-left-radius:10px; border-top-right-radius:10px; font-weight:700; font-size:14px; display:flex; justify-content:space-between; align-items:center;">
+            <span>Verificando Preços</span>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span id="ewRefreshCount" style="font-size:12px; font-style:italic;"></span>
+              <button id="ewClearLogBtn" title="Limpar histórico de alterações de preços" style="background:transparent; border:1px solid #beebe4; color:white; border-radius:4px; font-size:10px; cursor:pointer; padding: 2px 5px; line-height:1;">Limpar</button>
+            </div>
+          </div>
+          <div style="padding:12px;">
+            <div id="ewRefreshCountdown" style="font-size:13px; margin-bottom:10px; color:#374151;"></div>
+            <div id="ewRefreshStockList" style="max-height:200px; overflow-y:auto; font-size:12px;">
+              <!-- Stock list will be populated here -->
+            </div>
+            <div id="ewRefreshChangeLog" style="margin-top:10px; border-top: 1px solid #e5e7eb; padding-top:10px; font-size:12px; display:none;">
+              <!-- Change log will be populated here -->
+            </div>
+          </div>
+        </div>
+        <div class="body" id="ewBodyWrap">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Rank</th>
+                  <th>Ticker</th>
+                  <th class="num">Preço</th>
+                  <th class="num">Preço Médio</th>
+                  <th class="num">Qtd atual</th>
+                  <th class="num">Valor atual</th>
+                  <th class="num">Alvo por ativo</th>
+                  <th class="num">Valor após</th>
+                  <th class="num">Falta (R$)</th>
+                  <th class="num">Qtd p/ comprar</th>
+                  <th class="num">Custo estimado</th>
+                </tr>
+              </thead>
+              <tbody id="ewBody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="header sell-header" id="ewSellHeader" style="margin-top: 16px; display: none;">
+          <h3 class="title">Plano de Venda (Ativos Fora do Top N)</h3>
+          <div class="controls">
+            <div class="controls-row">
+              <label style="color:white; font-size:12px; display:flex; align-items:center; gap:4px; cursor:pointer;"><input type="checkbox" id="ewSellShowCurrency"> Mostrar R$</label>
+              <button id="ewSellExportCsv" class="toggle-btn" type="button" title="Baixar lista em CSV.">Exportar CSV</button>
+              <button id="ewSellToggle" class="toggle-btn" type="button">Ocultar</button>
+            </div>
+          </div>
+        </div>
+        <div class="body" id="ewSellBodyWrap" style="display: none;">
+            <div class="table-wrap no-scroll">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Ticker</th>
+                            <th class="num">Qtd atual</th>
+                            <th class="num">Preço</th>
+                            <th class="num">Valor total</th>
+                            <th class="num" style="text-align:center; width:50px;"><input type="checkbox" id="ewSellSelectAll" title="Selecionar Todos"></th>
+                        </tr>
+                    </thead>
+                    <tbody id="ewSellBody"></tbody>
+                </table>
+            </div>
+        </div>
+      </div>
+    `;
+    root.appendChild(wrap);
+  
+    const $ = (sel) => root.querySelector(sel);
+    const ewN = $('#ewN');
+    const ewSource = $('#ewSource');
+    const ewTotal = $('#ewTotal');
+    const ewBody = $('#ewBody');
+    const ewBodyWrap = $('#ewBodyWrap');
+    const ewToggle = $('#ewToggle');
+    const ewUpdateMyStocks = $('#ewUpdateMyStocks');
+    const ewExportCsv = $('#ewExportCsv');
+    const ewAutoRefresh = $('#ewAutoRefresh');
+    const ewAutoRefreshStatus = $('#ewAutoRefreshStatus');
+    const ewRefreshAlert = $('#ewRefreshAlert');
+    const ewRefreshCountdown = $('#ewRefreshCountdown');
+    const ewRefreshStockList = $('#ewRefreshStockList');
+    const ewRefreshChangeLog = $('#ewRefreshChangeLog');
+    const ewRefreshCount = $('#ewRefreshCount');
+    const ewClearLogBtn = $('#ewClearLogBtn');
+
+    const ewSellHeader = $('#ewSellHeader');
+    const ewSellBodyWrap = $('#ewSellBodyWrap');
+    const ewSellToggle = $('#ewSellToggle');
+    const ewSellExportCsv = $('#ewSellExportCsv');
+    const ewSellShowCurrency = $('#ewSellShowCurrency');
+
+    const ewModeInputs = root.querySelectorAll('input[name="ewMode"]');
+    let ewMode = 'investir';
+    let ewSourceValue = 'fm';
+    const MODE_KEY = 'ew_mode';
+    const SOURCE_KEY = 'ew_source';
+    function loadMode() { return new Promise((resolve) => { try { chrome.storage.sync.get([MODE_KEY], (r) => resolve(r?.[MODE_KEY] || 'investir')); } catch { resolve('investir'); } }); }
+    function saveMode(v) { return new Promise((resolve) => { try { chrome.storage.sync.set({ [MODE_KEY]: v }, () => resolve()); } catch { resolve(); } }); }
+    function loadSource() { return new Promise((resolve) => { try { chrome.storage.sync.get([SOURCE_KEY], (r) => resolve(r?.[SOURCE_KEY] || 'fm')); } catch { resolve('fm'); } }); }
+    function saveSource(v) { return new Promise((resolve) => { try { chrome.storage.sync.set({ [SOURCE_KEY]: v }, () => resolve()); } catch { resolve(); } }); }
+
+    const SELL_CURRENCY_KEY = 'ew_sell_plan_show_currency';
+    function loadSellCurrency() { return new Promise((resolve) => { try { chrome.storage.sync.get([SELL_CURRENCY_KEY], (r) => resolve(Boolean(r?.[SELL_CURRENCY_KEY]))); } catch { resolve(false); } }); }
+    function saveSellCurrency(v) { return new Promise((resolve) => { try { chrome.storage.sync.set({ [SELL_CURRENCY_KEY]: Boolean(v) }, () => resolve()); } catch { resolve(); } }); }
+    
+    if (ewClearLogBtn) {
+      ewClearLogBtn.addEventListener('click', async () => {
+        if (confirm('Tem certeza que deseja limpar o histórico de alterações de preços?')) {
+          await new Promise(resolve => chrome.storage.local.set({ [PRICE_CHANGE_LOG_KEY]: [] }, resolve));
+          ewRefreshChangeLog.innerHTML = '';
+          ewRefreshChangeLog.style.display = 'none';
+        }
+      });
+    }
+
+    // Utils are now global
+  
+    // --- Auto-refresh price checker logic ---
+    const REFRESH_KEY = 'ew_auto_refresh_running';
+    const REFRESH_COUNT_KEY = 'ew_auto_refresh_count';
+    const PRICE_CHANGE_LOG_KEY = 'ew_price_change_log';
+    const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+    let refreshTimeoutId = null;
+    let countdownIntervalId = null;
+    // Use window.sessionStorage as chrome.storage.session is not available in content scripts.
+    const sessionGet = (keys) => new Promise(resolve => {
+      const result = {};
+      if (Array.isArray(keys)) {
+        keys.forEach(key => {
+          const value = sessionStorage.getItem(key);
+          if (value !== null) {
+            try { result[key] = JSON.parse(value); } catch { result[key] = value; }
+          }
+        });
+      }
+      resolve(result);
+    });
+    const sessionSet = (obj) => new Promise(resolve => {
+      if (typeof obj === 'object' && obj !== null) {
+        for (const key in obj) {
+          if (Object.hasOwnProperty.call(obj, key)) {
+            sessionStorage.setItem(key, JSON.stringify(obj[key]));
+          }
+        }
+      }
+      resolve();
+    });
+    const localGet = (keys) => new Promise((resolve, reject) => {
+      try {
+        chrome.storage.local.get(keys, (result) => {
+          if (chrome.runtime.lastError) return reject(chrome.runtime.lastError);
+          resolve(result);
+        });
+      } catch (e) { reject(e); }
+    });
+
+    async function handleAutoRefresh() {
+      if (refreshTimeoutId) clearTimeout(refreshTimeoutId);
+      if (countdownIntervalId) clearInterval(countdownIntervalId);
+
+      const { [REFRESH_KEY]: isRunning, [REFRESH_COUNT_KEY]: currentCount } = await sessionGet([REFRESH_KEY, REFRESH_COUNT_KEY]);
+
+      if (!isRunning) {
+        ewRefreshAlert.style.display = 'none';
+        ewAutoRefresh.textContent = 'Iniciar Verificação';
+        ewAutoRefreshStatus.textContent = '';
+        ewRefreshCount.textContent = '';
+        ewAutoRefresh.disabled = false;
+        return;
+      }
+
+      // It is running, so increment and display count.
+      // The count is initialized to 0 when starting, so the first refresh will be #1.
+      const newCount = (Number(currentCount) || 0) + 1;
+      await sessionSet({ [REFRESH_COUNT_KEY]: newCount });
+      ewRefreshCount.textContent = `Atualização #${newCount}`;
+
+      ewAutoRefresh.textContent = 'Parar Verificação';
+      ewAutoRefreshStatus.textContent = 'Aguardando tabela...';
+      ewAutoRefresh.disabled = false;
+
+      await new Promise(resolve => {
+        let tries = 0;
+        const iv = setInterval(() => {
+          if (findBodyRows().length > 0 || ++tries > 20) {
+            clearInterval(iv);
+            resolve();
+          }
+        }, 500);
+      });
+
+      ewAutoRefreshStatus.textContent = 'Verificando preços...';
+
+      const { my_portfolio_holdings: cachedHoldings } = await localGet(['my_portfolio_holdings']);
+      
+      if (!cachedHoldings || Object.keys(cachedHoldings).length === 0) {
+        ewAutoRefreshStatus.textContent = 'Cache vazio. Atualize.';
+        await sessionSet({ [REFRESH_KEY]: false });
+        ewRefreshAlert.style.display = 'none';
+        ewAutoRefresh.textContent = 'Iniciar Verificação';
+        return;
+      }
+
+      const pageHoldings = readHoldingsFromPage(document);
+      const changes = [];
+
+      for (const ticker in cachedHoldings) {
+        if (pageHoldings[ticker]) {
+          const cachedPrice = cachedHoldings[ticker].price;
+          const pagePrice = pageHoldings[ticker].price;
+
+          if (Number.isFinite(cachedPrice) && Number.isFinite(pagePrice) && Math.abs(cachedPrice - pagePrice) > 0.001) {
+            changes.push({
+              ticker,
+              oldPrice: cachedPrice,
+              newPrice: pagePrice,
+              timestamp: new Date().toISOString(),
+            });
+          }
+        }
+      }
+
+      if (changes.length > 0) {
+        // Changes detected. Log them, update cache, and continue the loop.
+        ewAutoRefreshStatus.textContent = 'Preços atualizados!';
+
+        // Update and show the floating panel
+        ewRefreshAlert.style.display = 'block';
+        ewRefreshCountdown.textContent = 'Preços alterados detectados! Continuando...';
+        ewRefreshCountdown.style.fontWeight = 'bold';
+        ewRefreshCountdown.style.color = '#03ab95';
+
+        // --- NEW: Persistent Price Change Log ---
+        const { [PRICE_CHANGE_LOG_KEY]: existingLog = [] } = await localGet([PRICE_CHANGE_LOG_KEY]);
+        const newLogEntry = {
+          timestamp: new Date().toISOString(),
+          changes: changes.map(c => ({ ticker: c.ticker, oldPrice: c.oldPrice, newPrice: c.newPrice })),
+        };
+        const newLog = [newLogEntry, ...existingLog].slice(0, 50); // Keep last 50 entries
+        await new Promise(resolve => chrome.storage.local.set({ [PRICE_CHANGE_LOG_KEY]: newLog }, resolve));
+
+        // Build and display the change log from the full history
+        const logHTML = `
+          <div style="font-weight:bold; margin-bottom:5px;">Histórico de Alterações de Preços:</div>
+          ${newLog.map(entry => `
+            <div style="border-bottom: 1px solid #f3f4f6; padding-bottom: 5px; margin-bottom: 5px;">
+              <div style="font-size:11px; color:#6b7280; font-weight:bold; margin-bottom:4px;">
+                ${new Date(entry.timestamp).toLocaleString('pt-BR')}
+              </div>
+              <table style="width:100%; font-size:12px; border-collapse:collapse;">
+                <thead>
+                  <tr>
+                    <th style="padding:2px; border-bottom:1px solid #e5e7eb; text-align:left;">Ativo</th>
+                    <th style="padding:2px; border-bottom:1px solid #e5e7eb; text-align:right;">Preço Antigo</th>
+                    <th style="padding:2px; border-bottom:1px solid #e5e7eb; text-align:right;">Preço Novo</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${entry.changes.map(change => `
+                    <tr>
+                      <td style="padding:2px;">${change.ticker}</td>
+                      <td style="padding:2px; text-align:right;">${fmtBRL(change.oldPrice)}</td>
+                      <td style="padding:2px; text-align:right; font-weight:bold; color:#03ab95;">${fmtBRL(change.newPrice)}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          `).join('')}
+        `;
+        ewRefreshChangeLog.innerHTML = logHTML;
+        ewRefreshChangeLog.style.display = 'block';
+
+        ewUpdateMyStocks.click(); // Atualiza o cache com os novos preços
+
+        // Schedule the next check instead of stopping
+        const nextCheck = new Date(Date.now() + REFRESH_INTERVAL_MS);
+        ewAutoRefreshStatus.textContent = `Preços atualizados! Próxima verificação às ${nextCheck.toLocaleTimeString('pt-BR')}`;
+        refreshTimeoutId = setTimeout(() => location.reload(), REFRESH_INTERVAL_MS);
+        if (countdownIntervalId) clearInterval(countdownIntervalId);
+        countdownIntervalId = setInterval(() => {
+          const remaining = Math.max(0, nextCheck.getTime() - Date.now());
+          const minutes = String(Math.floor(remaining / 60000)).padStart(2, '0');
+          const seconds = String(Math.floor((remaining % 60000) / 1000)).padStart(2, '0');
+          ewRefreshCountdown.textContent = `Próxima atualização em: ${minutes}:${seconds}`;
+          // After the first second, reset the style to normal for the countdown
+          ewRefreshCountdown.style.fontWeight = 'normal';
+          ewRefreshCountdown.style.color = '#374151';
+        }, 1000);
+      } else {
+        ewRefreshAlert.style.display = 'block';
+        ewRefreshStockList.innerHTML = `
+          <table style="width:100%; font-size:12px; border-collapse:collapse;">
+            <thead style="text-align:left;">
+              <tr>
+                <th style="padding:4px; border-bottom:1px solid #e5e7eb;">Ativo</th>
+                <th style="padding:4px; border-bottom:1px solid #e5e7eb; text-align:right;">Preço em Cache</th>
+                <th style="padding:4px; border-bottom:1px solid #e5e7eb; text-align:right;">Preço Atual</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${Object.entries(cachedHoldings).map(([ticker, data]) => {
+                const currentPageHolding = pageHoldings[ticker];
+                const currentPrice = currentPageHolding ? currentPageHolding.price : NaN;
+                return `
+                  <tr>
+                    <td style="padding:4px;">${ticker}</td>
+                    <td style="padding:4px; text-align:right;">${fmtBRL(data.price)}</td>
+                    <td style="padding:4px; text-align:right;">${Number.isFinite(currentPrice) ? fmtBRL(currentPrice) : '-'}</td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+        `;
+        const nextCheck = new Date(Date.now() + REFRESH_INTERVAL_MS);
+        ewAutoRefreshStatus.textContent = `Próxima verificação às ${nextCheck.toLocaleTimeString('pt-BR')}`;
+        refreshTimeoutId = setTimeout(() => location.reload(), REFRESH_INTERVAL_MS);
+        countdownIntervalId = setInterval(() => {
+          const remaining = Math.max(0, nextCheck.getTime() - Date.now());
+          const minutes = String(Math.floor(remaining / 60000)).padStart(2, '0');
+          const seconds = String(Math.floor((remaining % 60000) / 1000)).padStart(2, '0');
+          ewRefreshCountdown.textContent = `Próxima atualização em: ${minutes}:${seconds}`;
+        }, 1000);
+      }
+    }
+
+    ewAutoRefresh.addEventListener('click', async () => {
+      ewAutoRefresh.disabled = true;
+      const { [REFRESH_KEY]: isRunning } = await sessionGet([REFRESH_KEY]);
+      if (isRunning) {
+        if (refreshTimeoutId) clearTimeout(refreshTimeoutId);
+        if (countdownIntervalId) clearInterval(countdownIntervalId);
+        await sessionSet({ [REFRESH_KEY]: false });
+        handleAutoRefresh(); // Update UI to stopped state
+      } else {
+        // Reset UI from previous run before starting a new one
+        ewRefreshAlert.style.display = 'none';
+        ewRefreshChangeLog.style.display = 'none';
+        ewRefreshChangeLog.innerHTML = '';
+        ewRefreshCountdown.style.fontWeight = 'normal';
+        ewRefreshCountdown.style.color = '#374151';
+        ewRefreshCount.textContent = '';
+
+        const { my_portfolio_holdings: cachedHoldings } = await localGet(['my_portfolio_holdings']);
+        if (!cachedHoldings || Object.keys(cachedHoldings).length === 0) {
+          alert('Para iniciar a verificação, primeiro clique em "Atualizar Minhas Ações" para criar um cache dos preços atuais.');
+          ewAutoRefresh.disabled = false;
+          return;
+        }
+        await sessionSet({ [REFRESH_KEY]: true, [REFRESH_COUNT_KEY]: 0 });
+        location.reload();
+      }
+    });
+
+    function csvEscape(value) {
+      if (value == null) return '';
+      const str = String(value).replace(/\r?\n/g, ' ').trim();
+      if (/[";\r\n]/.test(str)) return '"' + str.replace(/"/g, '""') + '"';
+      return str;
+    }
+
+    function cellTextForCsv(cell) {
+      if (!cell) return '';
+      const checkbox = cell.querySelector('input[type="checkbox"]');
+      if (checkbox) return checkbox.checked ? 'Sim' : 'Nao';
+      return (cell.textContent || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function serializeTableToCsv(table) {
+      if (!table) return '';
+      const lines = [];
+      const sections = [];
+      if (table.tHead) sections.push(table.tHead);
+      if (table.tBodies) sections.push(...Array.from(table.tBodies));
+      if (table.tFoot) sections.push(table.tFoot);
+      sections.forEach((section) => {
+        if (!section) return;
+        Array.from(section.rows).forEach((row) => {
+          const cells = Array.from(row.cells).map((cell) => csvEscape(cellTextForCsv(cell)));
+          lines.push(cells.join(';'));
+        });
+      });
+      return lines.join('\n');
+    }
+
+    function downloadCsv(content, filename) {
+      if (!content) return;
+      const blob = new Blob(['﻿' + content], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    function timestampSuffix() {
+      const now = new Date();
+      const pad = (n) => String(n).padStart(2, '0');
+      return now.getFullYear() + pad(now.getMonth() + 1) + pad(now.getDate()) + '-' + pad(now.getHours()) + pad(now.getMinutes()) + pad(now.getSeconds());
+    }
+
+    // Prefer the FIRST value shown in the page header (sensitive-field fw-600)
+    function detectFirstSensitiveTotal() {
+      const el = document.querySelector('span.sensitive-field.fw-600');
+      if (!el) return NaN;
+      const v = parseMoneyBR(el.textContent);
+      return Number.isFinite(v) ? v : NaN;
+    }
+  
+    function detectPortfolioTotal() {
+      let maxVal = 0;
+      document.querySelectorAll('span.sensitive-field.fw-600').forEach((sp) => {
+        const v = parseMoneyBR(sp.textContent);
+        if (Number.isFinite(v)) maxVal = Math.max(maxVal, v);
+      });
+      if (maxVal > 0) return maxVal;
+      // Fallback: sum of currentValue if available, else price*quantity
+      let sum = 0;
+      document.querySelectorAll('tbody.list tr.item').forEach((r) => {
+        const cv = r.querySelector('td[data-key="currentValue"]');
+        let val = NaN;
+        if (cv) {
+          val = Number(cv.getAttribute('title'));
+          if (!Number.isFinite(val)) val = parseMoneyBR(cv.textContent);
+        }
+        if (!Number.isFinite(val)) {
+          const p = r.querySelector('td[data-key="price"]');
+          const q = r.querySelector('td[data-key="quantity"]');
+          let price = Number(p?.getAttribute('title'));
+          if (!Number.isFinite(price)) price = parseMoneyBR(p?.textContent);
+          const qty = Number(q?.getAttribute('title')) || parseIntBR(q?.textContent);
+          if (Number.isFinite(price) && Number.isFinite(qty)) val = price * qty;
+        }
+        if (Number.isFinite(val)) sum += val;
+      });
+      return sum;
+    }
+  
+    function readHoldingsFromPage(rootEl) {
+      const scope = rootEl && typeof rootEl.querySelectorAll === 'function' ? rootEl : document;
+      const map = Object.create(null);
+      scope.querySelectorAll('tbody.list tr.item').forEach((r) => {
+        const codeTd = r.querySelector('td[data-key="code"]');
+        const code = (codeTd?.getAttribute('title') || codeTd?.textContent || '').trim().toUpperCase();
+        if (!code) return;
+        const p = r.querySelector('td[data-key="price"]');
+        const q = r.querySelector('td[data-key="quantity"]');
+        const avg = r.querySelector('td[data-key="unitValue"]');
+        let price = Number(p?.getAttribute('title'));
+        if (!Number.isFinite(price)) price = parseMoneyBR(p?.textContent);
+        const qty = Number(q?.getAttribute('title')) || parseIntBR(q?.textContent);
+        let avgPrice = Number(avg?.getAttribute('title'));
+        if (!Number.isFinite(avgPrice)) avgPrice = parseMoneyBR(avg?.textContent);
+        map[code] = { price: Number.isFinite(price) ? price : NaN, qty: Number.isFinite(qty) ? qty : 0, avgPrice: Number.isFinite(avgPrice) ? avgPrice : NaN };
+      });
+      return map;
+    }
+  
+    function fetchTopNFromAPI(cb) {
+      const source = ewSource.value || 'fm';
+      chrome.runtime.sendMessage({ type: 'GET_TOPN_CHECKLIST', source }, (resp) => {
+        if (resp && resp.ok && resp.json && Array.isArray(resp.json.data)) cb(null, resp.json.data);
+        else cb(new Error(resp?.error || 'fetch checklist failed'));
+      });
+    }
+  
+    function normalizeChecklist(arr) {
+      return (arr || []).map((r) => ({
+        rank: Number(r.final_rank ?? r.rank ?? r.fm_rank),
+        code: String(r.ticker || r.code || r.symbol || '').trim().toUpperCase(),
+        price: Number(r.price || r.current_price || r.close || r.last || r.preco)
+      })).filter(x => x.code && Number.isFinite(x.rank)).sort((a,b) => a.rank - b.rank);
+    }
+  
+    // integer equal-weight allocator implemented in recompute()
+  
+    function recompute() {
+      const N = Number(ewN.value) || 10;
+      const totalFromInput = parseMoneyBR(ewTotal.value);
+  
+      chrome.storage.local.get(['my_portfolio_holdings'], (result) => {
+        const holdings = result.my_portfolio_holdings;
+  
+        if (!holdings || typeof holdings !== 'object' || Object.keys(holdings).length === 0) {
+          ewBody.innerHTML = `
+            <tr>
+              <td colspan="11" style="text-align: center; padding: 20px; color: #6b7280; font-style: italic;">
+                Sua carteira ainda não foi carregada. Por favor, clique no botão "Atualizar Minhas Ações" para fazer a leitura inicial.
+              </td>
+            </tr>
+          `;
+          return;
+        }
+  
+        fetchTopNFromAPI((err, data) => {
+          if (err) {
+            ewBody.innerHTML = `<tr><td colspan="11" style="text-align: center; padding: 20px; color: #c62828;">Erro ao buscar dados da API: ${err.message}</td></tr>`;
+            return;
+          }
+          const normalized = normalizeChecklist(data);
+          const top = normalized.slice(0, N);
+          const topTickers = new Set(top.map(t => t.code));
+  
+          let targetPer = 0;
+          if (ewMode === 'rebalancear') {
+            targetPer = Number.isFinite(totalFromInput) && totalFromInput > 0 ? totalFromInput / N : 0;
+          } else { // 'investir'
+            const investmentAmount = totalFromInput;
+            // Consider only the cost basis of assets that are in the Top N list, not the whole portfolio.
+            // This makes the 'target per asset' calculation more intuitive for the user.
+            const currentPortfolioTotal = Object.entries(holdings)
+              .filter(([ticker, _]) => topTickers.has(ticker))
+              .reduce((acc, [_, stock]) => {
+                if (stock && Number.isFinite(stock.avgPrice) && stock.avgPrice > 0 && Number.isFinite(stock.qty)) {
+                  return acc + (stock.avgPrice * stock.qty);
+                }
+                return acc;
+              }, 0);
+            const finalPortfolioTotal = currentPortfolioTotal + (Number.isFinite(investmentAmount) ? investmentAmount : 0);
+            targetPer = finalPortfolioTotal > 0 ? finalPortfolioTotal / N : 0;
+          }
+  
+          ewBody.innerHTML = '';
+          const computed = [];
+          top.forEach((it) => {
+            const fromCache = holdings[it.code] || { price: NaN, qty: 0, avgPrice: NaN };
+            const price = Number.isFinite(it.price) && it.price > 0 ? it.price : fromCache.price;
+            const qty = Number.isFinite(fromCache.qty) ? fromCache.qty : 0;
+            const avgPrice = fromCache.avgPrice;
+            const currentAmount = Number.isFinite(price) && price > 0 && qty > 0 ? price * qty : 0; // Market Value
+            const investedAmount = (Number.isFinite(avgPrice) && avgPrice > 0 && qty > 0) ? avgPrice * qty : 0; // Cost Basis
+            computed.push({
+              rank: it.rank,
+              code: it.code,
+              price,
+              qty,
+              avgPrice,
+              currentAmount, // For display
+              investedAmount, // For calculation
+              targetPer,
+            });
+          });
+          
+          let budgetCents = Number.isFinite(totalFromInput) && totalFromInput > 0 ? Math.round(totalFromInput * 100) : 0;
+          let spendMap = Object.create(null);
+          let qtyMap = Object.create(null);
+  
+          if (ewMode === 'rebalancear') {
+            const targetTotalCents = Number.isFinite(totalFromInput) && totalFromInput > 0 ? Math.round(totalFromInput * 100) : 0;
+            const sumBaseCents = computed.reduce((acc, row) => acc + (Number.isFinite(row.investedAmount) ? Math.round(row.investedAmount * 100) : 0), 0);
+            budgetCents = Math.max(0, targetTotalCents - sumBaseCents);
+            const items = computed.map((row) => {
+              const priceCents = Number.isFinite(row.price) && row.price > 0 ? Math.round(row.price * 100) : 0;
+              const baseCents = Number.isFinite(row.investedAmount) ? Math.round(row.investedAmount * 100) : 0;
+              const targetCents = Number.isFinite(row.targetPer) ? Math.round(row.targetPer * 100) : 0;
+              const targetQty = priceCents > 0 ? Math.floor(targetCents / priceCents) : 0;
+              const baseQty = Number.isFinite(row.qty) ? row.qty : 0;
+              const deltaQty = Math.max(0, targetQty - baseQty);
+              const deficitCents = Math.max(0, targetCents - baseCents);
+              return { code: row.code, rank: row.rank, priceCents, baseCents, targetCents, targetQty, deltaQty, deficitCents, q: 0, spendCents: 0 };
+            });
+  
+            const minEligible = () => {
+              let m = Number.MAX_SAFE_INTEGER;
+              for (const it of items) if (it.priceCents > 0 && it.deltaQty > 0) m = Math.min(m, it.priceCents);
+              return m;
+            };
+            const canBuyAny = () => items.some((it) => it.deltaQty > 0 && it.priceCents > 0 && it.priceCents <= budgetCents);
+            while (canBuyAny() && budgetCents >= minEligible()) {
+              for (const it of items) {
+                const after = it.baseCents + it.spendCents;
+                it.deficitCents = Math.max(0, it.targetCents - after);
+              }
+              let best = null;
+              let bestRatio = -1;
+              for (const it of items) {
+                if (it.deltaQty <= 0 || it.priceCents <= 0 || it.priceCents > budgetCents) continue;
+                const ratio = it.priceCents > 0 ? (it.deficitCents / it.priceCents) : 0;
+                if (
+                  ratio > bestRatio ||
+                  (Math.abs(ratio - bestRatio) < 1e-9 && (
+                    it.deficitCents > (best?.deficitCents ?? -1) ||
+                    (it.deficitCents === (best?.deficitCents ?? -1) && (
+                      it.priceCents < (best?.priceCents ?? Number.MAX_SAFE_INTEGER) ||
+                      (it.priceCents === (best?.priceCents ?? 0) && it.rank < (best?.rank ?? 1e9))
+                    ))
+                  ))
+                ) {
+                  best = it; bestRatio = ratio;
+                }
+              }
+              if (!best) break;
+              best.q += 1;
+              best.deltaQty -= 1;
+              best.spendCents += best.priceCents;
+              budgetCents -= best.priceCents;
+            }
+  
+            spendMap = Object.create(null);
+            qtyMap = Object.create(null);
+            for (const it of items) { spendMap[it.code] = (it.spendCents || 0) / 100; qtyMap[it.code] = it.q || 0; }
+          } else {
+            const items = computed.map((row) => {
+              const priceCents = Number.isFinite(row.price) && row.price > 0 ? Math.round(row.price * 100) : 0;
+              const baseCents = Number.isFinite(row.investedAmount) ? Math.round(row.investedAmount * 100) : 0;
+              const targetCents = Number.isFinite(row.targetPer) ? Math.round(row.targetPer * 100) : 0;
+              const deficitCents = Math.max(0, targetCents - baseCents);
+              return { code: row.code, rank: row.rank, priceCents, baseCents, targetCents, deficitCents, q: 0, spendCents: 0 };
+            });
+  
+            const minPrice = () => {
+              let m = Number.MAX_SAFE_INTEGER;
+              for (const it of items) if (it.priceCents > 0) m = Math.min(m, it.priceCents);
+              return m;
+            };
+  
+            const canAffordAny = () => items.some((it) => it.priceCents > 0 && it.priceCents <= budgetCents);
+            while (canAffordAny() && budgetCents >= minPrice()) {
+              for (const it of items) {
+                const after = it.baseCents + it.spendCents;
+                it.deficitCents = Math.max(0, it.targetCents - after);
+              }
+  
+              const eligByDef = items.filter((it) => it.deficitCents > 0 && it.priceCents > 0 && it.priceCents <= budgetCents);
+  
+              let best = null;
+              if (eligByDef.length) {
+                // For 'investir' mode, prioritize the one with the largest absolute deficit to be more intuitive.
+                let bestDeficit = -1;
+                for (const it of eligByDef) {
+                  if (
+                    it.deficitCents > bestDeficit ||
+                    (it.deficitCents === bestDeficit && (
+                      it.priceCents < (best?.priceCents ?? Number.MAX_SAFE_INTEGER) ||
+                      (it.priceCents === (best?.priceCents ?? 0) && it.rank < (best?.rank ?? 1e9))
+                    ))
+                  ) {
+                    best = it;
+                    bestDeficit = it.deficitCents;
+                  }
+                }
+              } else {
+                let bestVal = Number.MAX_SAFE_INTEGER;
+                for (const it of items) {
+                  if (it.priceCents <= 0 || it.priceCents > budgetCents) continue;
+                  const after = it.baseCents + it.spendCents;
+                  if (
+                    after < bestVal ||
+                    (after === bestVal && (
+                      it.priceCents < (best?.priceCents ?? Number.MAX_SAFE_INTEGER) ||
+                      (it.priceCents === (best?.priceCents ?? 0) && it.rank < (best?.rank ?? 1e9))
+                    ))
+                  ) {
+                    best = it; bestVal = after;
+                  }
+                }
+                if (!best) break;
+              }
+  
+              best.q += 1;
+              best.spendCents += best.priceCents;
+              budgetCents -= best.priceCents;
+            }
+  
+            spendMap = Object.create(null);
+            qtyMap = Object.create(null);
+            for (const it of items) { spendMap[it.code] = (it.spendCents || 0) / 100; qtyMap[it.code] = it.q || 0; }
+          }
+  
+          computed.forEach((row) => {
+            const tr = document.createElement('tr');
+            const cost = Number(spendMap[row.code] || 0);
+            const valueAfter = (Number.isFinite(row.investedAmount) ? row.investedAmount : 0) + cost;
+            const faltaAfter = Number.isFinite(row.targetPer) ? Math.max(0, row.targetPer - valueAfter) : NaN;
+            const qtyToBuy = Number(qtyMap[row.code] || 0);
+            if (Number.isFinite(row.qty) && row.qty > 0) tr.classList.add('row-holding');
+            tr.innerHTML = `
+              <td>${row.rank}</td>
+              <td>${row.code}</td>
+              <td class="num">${Number.isFinite(row.price) ? fmtBRL(row.price) : '<span class="muted">—</span>'}</td>
+              <td class="num">${Number.isFinite(row.avgPrice) ? fmtBRL(row.avgPrice) : '<span class="muted">—</span>'}</td>
+              <td class="num">${Number.isFinite(row.qty) ? row.qty : '<span class="muted">—</span>'}</td>
+              <td class="num">${row.qty > 0 ? fmtBRL(row.investedAmount) : '<span class="muted">—</span>'}</td>
+              <td class="num">${Number.isFinite(row.targetPer) ? fmtBRL(row.targetPer) : '<span class="muted">—</span>'}</td>
+              <td class="num">${(Number.isFinite(row.investedAmount) || Number.isFinite(cost)) ? fmtBRL(valueAfter) : '<span class="muted">—</span>'}</td>
+              <td class="num">${Number.isFinite(faltaAfter) ? fmtBRL(faltaAfter) : '<span class="muted">—</span>'}</td>
+              <td class="num">${qtyToBuy > 0 ? qtyToBuy : '<span class="muted">—</span>'}</td>
+              <td class="num">${fmtBRL(cost)}</td>
+            `;
+            ewBody.appendChild(tr);
+          });
+  
+          const remainder = Math.max(0, budgetCents) / 100;
+          const remTr = document.createElement('tr');
+          remTr.innerHTML = `
+            <td></td>
+            <td><strong>Sobra</strong></td>
+            <td class="num" colspan="8"><span class="muted">—</span></td>
+            <td class="num">${fmtBRL(remainder)}</td>
+          `;
+          ewBody.appendChild(remTr);
+
+          // --- SELL PLAN LOGIC ---
+          const ewSellBody = $('#ewSellBody');
+          ewSellBody.innerHTML = '';
+
+          const stocksToSell = [];
+          for (const ticker in holdings) {
+            if (holdings[ticker] && holdings[ticker].qty > 0 && !topTickers.has(ticker)) {
+              const stock = holdings[ticker];
+              stocksToSell.push({
+                code: ticker,
+                qty: stock.qty,
+                price: stock.price,
+                totalValue: (Number.isFinite(stock.price) && Number.isFinite(stock.qty)) ? stock.price * stock.qty : 0,
+              });
+            }
+          }
+
+          if (stocksToSell.length > 0) {
+            ewSellHeader.style.display = 'flex';
+            // Visibility of ewSellBodyWrap is controlled by its own collapse logic
+            const showCurrency = ewSellShowCurrency.checked;
+            const priceFormatter = showCurrency ? fmtBRL : fmtNumberBR;
+
+            stocksToSell.sort((a, b) => b.totalValue - a.totalValue);
+            let totalSellValue = 0;
+            stocksToSell.forEach(stock => {
+              const tr = document.createElement('tr');
+              tr.innerHTML = `
+                <td>${stock.code}F</td>
+                <td class="num">${stock.qty}</td>
+                <td class="num">${Number.isFinite(stock.price) ? priceFormatter(stock.price) : '<span class="muted">—</span>'}</td>
+                <td class="num">${Number.isFinite(stock.totalValue) ? fmtBRL(stock.totalValue) : '<span class="muted">—</span>'}</td>
+                <td class="num" style="text-align:center;"><input type="checkbox" class="ew-sell-checkbox" data-ticker="${stock.code}"></td>
+              `;
+              ewSellBody.appendChild(tr);
+              if (Number.isFinite(stock.totalValue)) totalSellValue += stock.totalValue;
+            });
+            const totalTr = document.createElement('tr');
+            totalTr.style.fontWeight = 'bold';
+            totalTr.style.borderTop = '2px solid #d1d5db';
+            totalTr.innerHTML = `<td colspan="3">Valor Total a Vender</td><td class="num" id="ewSellTotalValue">${fmtBRL(totalSellValue)}</td><td></td>`;
+            ewSellBody.appendChild(totalTr);
+          } else {
+            ewSellHeader.style.display = 'none';
+            ewSellBodyWrap.style.display = 'none';
+          }
+          // --- END OF SELL PLAN LOGIC ---
+        });
+      });
+    }
+
+    // --- Sell Plan Collapse Logic ---
+    const SELL_COLLAPSE_KEY = 'ew_sell_plan_collapsed';
+    function loadSellCollapsed() { return new Promise((resolve) => { try { chrome.storage.sync.get([SELL_COLLAPSE_KEY], (r) => resolve(Boolean(r?.[SELL_COLLAPSE_KEY]))); } catch { resolve(false); } }); }
+    function saveSellCollapsed(v) { return new Promise((resolve) => { try { chrome.storage.sync.set({ [SELL_COLLAPSE_KEY]: Boolean(v) }, () => resolve()); } catch { resolve(); } }); }
+  
+    function applySellCollapseState(collapsed) {
+      if (!ewSellBodyWrap || !ewSellToggle) return;
+      ewSellBodyWrap.style.display = collapsed ? 'none' : 'block';
+      ewSellToggle.textContent = collapsed ? 'Mostrar' : 'Ocultar';
+    }
+  
+    ewSellShowCurrency.addEventListener('change', async () => {
+      await saveSellCurrency(ewSellShowCurrency.checked);
+      recompute();
+    });
+
+    ewSellToggle.addEventListener('click', async () => {
+      const nowCollapsed = ewSellBodyWrap.style.display !== 'none' ? true : false;
+      applySellCollapseState(nowCollapsed);
+      await saveSellCollapsed(nowCollapsed);
+    });
+
+    // Load initial state for sell plan collapse
+    // Event listener for row selection in the sell plan
+    const ewSellBody = $('#ewSellBody');
+    if (ewSellBody) {
+      ewSellBody.addEventListener('change', (e) => {
+        if (e.target.matches('.ew-sell-checkbox')) {
+          const tr = e.target.closest('tr');
+          if (tr) {
+            tr.classList.toggle('row-sell-selected', e.target.checked);
+          }
+          updateSellTotal();
+        }
+      });
+    }
+
+    // Event listener for "select all" in the sell plan
+    const ewSellSelectAll = $('#ewSellSelectAll');
+    if (ewSellSelectAll) {
+      ewSellSelectAll.addEventListener('change', (e) => {
+        const isChecked = e.target.checked;
+        ewSellBody.querySelectorAll('.ew-sell-checkbox').forEach(chk => {
+          chk.checked = isChecked;
+          const tr = chk.closest('tr');
+          if (tr) tr.classList.toggle('row-sell-selected', isChecked);
+        });
+        updateSellTotal();
+      });
+    }
+  
+    function updateSellTotal() {
+      const ewSellBody = $('#ewSellBody');
+      if (!ewSellBody) return;
+
+      const totalValueCell = $('#ewSellTotalValue');
+      if (!totalValueCell) return;
+
+      const allCheckboxes = ewSellBody.querySelectorAll('.ew-sell-checkbox');
+      const selectedCheckboxes = ewSellBody.querySelectorAll('.ew-sell-checkbox:checked');
+
+      let rowsToSum;
+      if (selectedCheckboxes.length > 0) {
+        rowsToSum = Array.from(selectedCheckboxes).map(chk => chk.closest('tr'));
+      } else {
+        rowsToSum = Array.from(allCheckboxes).map(chk => chk.closest('tr'));
+      }
+
+      let newTotal = 0;
+      rowsToSum.forEach(tr => {
+        if (!tr) return;
+        const valueCell = tr.cells[3];
+        if (valueCell) {
+          const value = parseMoneyBR(valueCell.textContent);
+          if (Number.isFinite(value)) newTotal += value;
+        }
+      });
+      totalValueCell.textContent = fmtBRL(newTotal);
+    }
+
+    if (ewExportCsv) {
+      ewExportCsv.addEventListener('click', () => {
+        const planTable = ewBody ? ewBody.closest('table') : null;
+        if (!planTable) {
+          alert('Tabela do plano nao encontrada.');
+          return;
+        }
+        const planRows = ewBody ? Array.from(ewBody.querySelectorAll('tr')).filter((tr) => tr.querySelectorAll('td').length >= 11) : [];
+        if (planRows.length === 0) {
+          alert('Nenhum dado disponivel para exportar. Atualize suas acoes.');
+          return;
+        }
+        const csv = serializeTableToCsv(planTable);
+        if (!csv) {
+          alert('Nao foi possivel gerar o arquivo CSV.');
+          return;
+        }
+        downloadCsv(csv, 'plano-equal-weight-' + timestampSuffix() + '.csv');
+      });
+    }
+
+    if (ewSellExportCsv) {
+      ewSellExportCsv.addEventListener('click', () => {
+        const sellTable = ewSellBody ? ewSellBody.closest('table') : null;
+        if (!sellTable) {
+          alert('Tabela de vendas nao encontrada.');
+          return;
+        }
+        const sellRows = ewSellBody ? Array.from(ewSellBody.querySelectorAll('tr')).filter((tr) => tr.querySelectorAll('td').length >= 5) : [];
+        if (sellRows.length === 0) {
+          alert('Nenhum ativo fora do Top N para exportar.');
+          return;
+        }
+        const csv = serializeTableToCsv(sellTable);
+        if (!csv) {
+          alert('Nao foi possivel gerar o arquivo CSV.');
+          return;
+        }
+        downloadCsv(csv, 'plano-venda-' + timestampSuffix() + '.csv');
+      });
+    }
+
+    // Prefill total with detected portfolio total
+    const first = detectFirstSensitiveTotal();
+    const detected = Number.isFinite(first) && first > 0 ? first : detectPortfolioTotal();
+    if (Number.isFinite(detected) && detected > 0) ewTotal.value = detected.toLocaleString('pt-BR', { style:'currency', currency:'BRL' });
+    else ewTotal.value = '';
+  
+    // Events
+    ewN.addEventListener('change', recompute);
+    ewSource.addEventListener('change', async () => {
+      ewSourceValue = ewSource.value;
+      await saveSource(ewSourceValue);
+      recompute();
+    });
+    ewTotal.addEventListener('change', () => { // keep as BR currency if user typed raw number
+      const n = parseMoneyBR(ewTotal.value);
+      if (Number.isFinite(n)) ewTotal.value = n.toLocaleString('pt-BR', { style:'currency', currency:'BRL' });
+      recompute();
+    });
+    ewUpdateMyStocks.addEventListener('click', async () => {
+      ewUpdateMyStocks.disabled = true;
+      const originalText = ewUpdateMyStocks.textContent;
+      ewUpdateMyStocks.textContent = 'Atualizando...';
+  
+      try {
+        await setShowAllOnPagination();
+      } catch (e) {
+        console.error('[StatusInvest Ext] Erro ao tentar exibir todos os ativos:', e);
+        ewUpdateMyStocks.disabled = false;
+        ewUpdateMyStocks.textContent = originalText;
+        return;
+      }
+  
+      // Aguarda a página atualizar a lista de ativos
+      setTimeout(() => {
+        try {
+          // Find the "AÇÕES" group to use as a context for reading holdings
+          let acoesGroup = null;
+          const groups = document.querySelectorAll('li.group');
+          for (const group of groups) {
+            const h3 = group.querySelector('h3');
+            if (h3 && (h3.textContent || '').trim().toUpperCase() === 'AÇÕES') {
+              acoesGroup = group;
+              break;
+            }
+          }
+
+          const holdings = readHoldingsFromPage(acoesGroup); // Pass only the 'Ações' group context
+          chrome.storage.local.set({ my_portfolio_holdings: holdings }, () => {
+            if (chrome.runtime.lastError) {
+              console.error('[StatusInvest Ext] Erro ao salvar no cache (contexto invalidado?):', chrome.runtime.lastError.message);
+              ewUpdateMyStocks.disabled = false;
+              ewUpdateMyStocks.textContent = originalText;
+              return;
+            }
+            const tickers = Object.keys(holdings);
+            console.log('[StatusInvest Ext] Ações da carteira salvas:', tickers);
+            ewUpdateMyStocks.textContent = `Carteira salva (${tickers.length} ativos)!`;
+            setTimeout(() => {
+              ewUpdateMyStocks.disabled = false;
+              ewUpdateMyStocks.textContent = originalText;
+              recompute(); // Recalcula o plano com os novos dados
+            }, 3000);
+          });
+        } catch (e) { console.error('[StatusInvest Ext] Erro ao ler/salvar ações:', e); ewUpdateMyStocks.disabled = false; ewUpdateMyStocks.textContent = originalText; }
+      }, 3000); // 3s de espera para a página renderizar
+    });
+    // Mode change
+    ewModeInputs.forEach((inp) => {
+      inp.addEventListener('change', async () => {
+        if (inp.checked) {
+          ewMode = inp.value === 'rebalancear' ? 'rebalancear' : 'investir';
+          await saveMode(ewMode);
+          recompute();
+        }
+      });
+    });
+  
+    // Persisted collapse state
+    const COLLAPSE_KEY = 'ew_plan_collapsed';
+    function loadCollapsed() { return new Promise((resolve) => { try { chrome.storage.sync.get([COLLAPSE_KEY], (r) => resolve(Boolean(r?.[COLLAPSE_KEY]))); } catch { resolve(false); } }); }
+    function saveCollapsed(v) { return new Promise((resolve) => { try { chrome.storage.sync.set({ [COLLAPSE_KEY]: Boolean(v) }, () => resolve()); } catch { resolve(); } }); }
+  
+    function applyCollapseState(collapsed) {
+      if (!ewBodyWrap || !ewToggle) return;
+      ewBodyWrap.style.display = collapsed ? 'none' : 'block';
+      ewToggle.textContent = collapsed ? 'Mostrar' : 'Ocultar';
+    }
+  
+    ewToggle.addEventListener('click', async () => { // Corrigido
+      const nowCollapsed = ewBodyWrap.style.display !== 'none' ? true : false;
+      applyCollapseState(nowCollapsed);
+      await saveCollapsed(nowCollapsed);
+    });
+  
+    // Load all initial states for panels
+    Promise.all([loadCollapsed(), loadSellCollapsed(), loadSellCurrency()]).then(([planCollapsed, sellCollapsed, showCurrency]) => {
+      applyCollapseState(planCollapsed);
+      applySellCollapseState(sellCollapsed);
+      ewSellShowCurrency.checked = showCurrency;
+      handleAutoRefresh();
+    });
+
+    // Load initial mode and source
+    Promise.all([loadMode(), loadSource()]).then(([m, s]) => {
+      ewMode = m === 'rebalancear' ? 'rebalancear' : 'investir';
+      ewModeInputs.forEach((inp) => { inp.checked = (inp.value === ewMode); });
+  
+      const validSources = ['fm', 'fm_inv10', 'magic_inv10+sum'];
+      ewSourceValue = validSources.includes(s) ? s : 'fm';
+      if (ewSource) ewSource.value = ewSourceValue;
+  
+      recompute();
+    });
+  
+    // Recompute on table changes (SPA)
+    const tbody = document.querySelector('tbody.list');
+    if (tbody) {
+      const obs = new MutationObserver(() => recompute());
+      obs.observe(tbody, { childList: true, subtree: false });
+    }
+  
+    // Initial
+    // recompute is also called after mode load
+  }
+
   // Boot: wait a bit for page scripts to render the table
   const MAX_TRIES = 20;
   let tries = 0;
@@ -463,703 +2204,3 @@
 
   // Overlay menu handled by a lightweight global content script (overlay.js).
 })();
-
-// Floating Shadow DOM panel: Rebalance dates manager
-// Idempotent and robust to SPA rerenders
-(function () {
-  if (document.readyState !== 'loading') initRebalancePanel();
-  else document.addEventListener('DOMContentLoaded', initRebalancePanel, { once: true });
-})();
-
-function initRebalancePanel() {
-  const HOST_ID = 'rebalance-panel-host';
-  if (document.getElementById(HOST_ID)) return; // prevent duplicates
-
-  const host = document.createElement('div');
-  host.id = HOST_ID;
-  const anchor = document.getElementById('cashposition-result');
-  if (anchor && anchor.parentElement) anchor.insertAdjacentElement('afterend', host);
-  else document.body.appendChild(host);
-
-  const root = host.attachShadow({ mode: 'open' });
-  const wrap = document.createElement('div');
-  wrap.innerHTML = `
-    <style>
-      :host { all: initial; display: block; width: 100%; }
-      .card { width: 100%; background: #fff; color: #1f2937; border: 1px solid #e5e7eb; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; margin: 12px 0; }
-      .header { display:flex; align-items:center; justify-content:space-between; padding: 10px 12px; border-bottom: 1px solid #f3f4f6; background:#f9fafb; border-top-left-radius:10px; border-top-right-radius:10px; }
-      .title { font-weight: 700; font-size: 14px; margin: 0; }
-      .body { padding: 10px 12px; }
-      .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px; }
-      label { font-size: 12px; color:#374151; }
-      input[type="date"] { padding:6px 8px; border:1px solid #e5e7eb; border-radius:6px; font-size:12px; }
-      select { padding:6px 8px; border:1px solid #e5e7eb; border-radius:6px; font-size:12px; background:#fff; }
-      button { padding:6px 10px; border:1px solid #d1d5db; background:#10b981; color:#fff; border-radius:6px; font-size:12px; cursor:pointer; }
-      button.secondary { background:#eef2ff; color:#1f2937; border-color:#e5e7eb; }
-      button.danger { background:#fee2e2; color:#991b1b; border-color:#fecaca; }
-      .table-wrap { max-height: 260px; overflow:auto; border-top:1px solid #f3f4f6; margin-top:8px; }
-      table { width:100%; border-collapse:collapse; font-size:12px; }
-      thead th { position: sticky; top: 0; background:#f9fafb; z-index:1; text-align:left; padding:6px 8px; border-bottom:1px solid #e5e7eb; }
-      tbody td { padding:6px 8px; border-bottom:1px solid #f3f4f6; vertical-align:middle; }
-      .status-late { color:#c62828; font-weight:700; }
-      .status-today { color:#1565c0; font-weight:700; }
-      .status-soon { color:#92400e; }
-      .banner { background:#fff7ed; color:#7c2d12; border:1px solid #fed7aa; border-radius:6px; padding:6px 8px; margin: 6px 0 8px 0; display:none; }
-      .actions { display:flex; gap:6px; }
-      .muted { color:#6b7280; }
-      /* Late highlighting: whole row/cells in red background */
-      .row-late td { background:#ffebee; }
-      .row-late td.next, .row-late td.status { color:#c62828; font-weight:700; }
-    </style>
-    <div class="card" part="card">
-      <div class="header"><h3 class="title">Quando foi o último rebalanceamento?</h3></div>
-      <div class="body">
-        <div class="row">
-          <div style="display:flex; flex-direction:column">
-            <label for="lastRebDate">Último rebalance</label>
-            <input type="date" id="lastRebDate" />
-          </div>
-          <div style="display:flex; flex-direction:column">
-            <label for="rebalanceInterval">Intervalo (meses)</label>
-            <select id="rebalanceInterval">
-              <option value="3">3</option>
-              <option value="6">6</option>
-              <option value="9">9</option>
-              <option value="12">12</option>
-            </select>
-          </div>
-          <div style="display:flex; align-items:flex-end">
-            <button id="addBtn">Adicionar</button>
-          </div>
-        </div>
-        <div id="banner" class="banner">⚠️ Está chegando a data do próximo rebalanceamento</div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Data</th>
-                <th>Próximo rebalance</th>
-                <th>Status</th>
-                <th>Ações</th>
-              </tr>
-            </thead>
-            <tbody id="listBody"></tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  `;
-
-  root.appendChild(wrap);
-
-  const $ = (sel) => root.querySelector(sel);
-  const STORAGE_KEY = 'rebalance_dates';
-
-  const inputLast = $('#lastRebDate');
-  const intervalSel = $('#rebalanceInterval');
-  const addBtn = $('#addBtn');
-  const listBody = $('#listBody');
-  const banner = $('#banner');
-
-  function toLocalDateInputValue(d) {
-    const dt = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
-    return dt.toISOString().slice(0, 10);
-  }
-  function startOfDayLocal(d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate()); }
-  function fmtDateBR(d) {
-    const dd = String(d.getDate()).padStart(2, '0');
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const yyyy = d.getFullYear();
-    return `${dd}:${mm}:${yyyy}`;
-  }
-  function diffDays(a, b) { const A = startOfDayLocal(a).getTime(); const B = startOfDayLocal(b).getTime(); return Math.round((B - A) / 86400000); }
-  function addMonthsSafe(date, months) {
-    const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-    const targetMonth = d.getMonth() + months;
-    const lastDayTarget = new Date(d.getFullYear(), targetMonth + 1, 0).getDate();
-    const day = Math.min(d.getDate(), lastDayTarget);
-    return new Date(d.getFullYear(), targetMonth, day);
-  }
-  function loadDates() {
-    return new Promise((resolve) => {
-      try { chrome.storage.sync.get([STORAGE_KEY], (res) => resolve(Array.isArray(res?.[STORAGE_KEY]) ? res[STORAGE_KEY] : [])); }
-      catch { resolve([]); }
-    });
-  }
-  function saveDates(arr) {
-    return new Promise((resolve) => {
-      try { chrome.storage.sync.set({ [STORAGE_KEY]: arr }, () => resolve()); }
-      catch { resolve(); }
-    });
-  }
-  let intervalMonths = 3;
-  function nextRebalance(dateISO) { return addMonthsSafe(new Date(dateISO), intervalMonths); }
-  function computeStatus(next, current) {
-    const dd = diffDays(startOfDayLocal(current), startOfDayLocal(next));
-    if (dd === 0) return { text: 'Hoje!', cls: 'status-today', late: false, soon: true };
-    if (dd < 0) return { text: `Atrasado ${Math.abs(dd)} dias`, cls: 'status-late', late: true, soon: false };
-    return { text: `Faltam ${dd} dias`, cls: dd <= 10 ? 'status-soon' : '', late: false, soon: dd <= 10 };
-  }
-  function renderList(currentDate) {
-    loadDates().then((arr) => {
-      arr.sort((a, b) => new Date(b.dateISO) - new Date(a.dateISO));
-      listBody.innerHTML = '';
-      if (arr.length) {
-        const next = nextRebalance(arr[0].dateISO);
-        const dd = diffDays(startOfDayLocal(new Date()), next);
-        banner.style.display = dd > 0 && dd <= 10 ? 'block' : (dd === 0 ? 'block' : 'none');
-        banner.textContent = dd === 0 ? 'Hoje! Dia do próximo rebalanceamento' : '⚠️ Está chegando a data do próximo rebalanceamento';
-      } else { banner.style.display = 'none'; }
-      arr.forEach((item) => {
-        const orig = new Date(item.dateISO);
-        const next = nextRebalance(item.dateISO);
-        const { text, cls, late } = computeStatus(next, currentDate);
-        const tr = document.createElement('tr');
-        tr.dataset.id = String(item.id);
-        tr.innerHTML = `
-          <td class="orig">${fmtDateBR(orig)}</td>
-          <td class="next">${fmtDateBR(next)}</td>
-          <td class="status ${cls}">${text}</td>
-          <td class="actions">
-            <button class="secondary btn-edit">Editar</button>
-            <button class="danger btn-del">Excluir</button>
-          </td>
-        `;
-        if (late) tr.classList.add('row-late');
-        listBody.appendChild(tr);
-      });
-    });
-  }
-  function refresh() { const current = new Date(); renderList(current); }
-  // Prefill Último rebalance com hoje por padrão
-  inputLast.value = toLocalDateInputValue(new Date());
-
-  // Interval persistence
-  const INTERVAL_KEY = 'rebalance_interval_months';
-  function loadInterval() {
-    return new Promise((resolve) => {
-      try {
-        chrome.storage.sync.get([INTERVAL_KEY], (res) => {
-          const v = Number(res?.[INTERVAL_KEY]);
-          resolve([3,6,9,12].includes(v) ? v : 3);
-        });
-      } catch { resolve(3); }
-    });
-  }
-  function saveInterval(v) {
-    return new Promise((resolve) => {
-      try { chrome.storage.sync.set({ [INTERVAL_KEY]: v }, () => resolve()); } catch { resolve(); }
-    });
-  }
-  addBtn.addEventListener('click', async () => {
-    const v = inputLast.value;
-    if (!v) { alert('Selecione a data do último rebalanceamento.'); return; }
-    const list = await loadDates();
-    list.push({ id: Date.now(), dateISO: v, createdAtISO: new Date().toISOString() });
-    await saveDates(list);
-    inputLast.value = '';
-    refresh();
-  });
-
-  // Load interval and wire select
-  (async () => {
-    const v = await loadInterval();
-    intervalMonths = v;
-    if (intervalSel) intervalSel.value = String(v);
-    refresh();
-  })();
-  if (intervalSel) {
-    intervalSel.addEventListener('change', async () => {
-      const v = Number(intervalSel.value);
-      intervalMonths = [3,6,9,12].includes(v) ? v : 3;
-      await saveInterval(intervalMonths);
-      refresh();
-    });
-  }
-  // Sem campo de data atual; usa sempre hoje
-  listBody.addEventListener('click', async (ev) => {
-    const btn = ev.target;
-    const tr = btn && btn.closest ? btn.closest('tr') : null;
-    if (!tr) return;
-    const id = Number(tr.dataset.id);
-    if (btn.classList.contains('btn-del')) {
-      if (!confirm('Excluir esta data?')) return;
-      const list = await loadDates();
-      await saveDates(list.filter((x) => Number(x.id) !== id));
-      refresh();
-    }
-    if (btn.classList.contains('btn-edit')) {
-      const list = await loadDates();
-      const idx = list.findIndex((x) => Number(x.id) === id);
-      if (idx === -1) return;
-      const tdOrig = tr.querySelector('td.orig');
-      const tdActions = tr.querySelector('td.actions');
-      const prevActions = tdActions.innerHTML;
-      const editInput = document.createElement('input');
-      editInput.type = 'date';
-      editInput.value = list[idx].dateISO;
-      editInput.style.padding = '4px 6px';
-      editInput.style.border = '1px solid #e5e7eb';
-      editInput.style.borderRadius = '6px';
-      tdOrig.innerHTML = '';
-      tdOrig.appendChild(editInput);
-      tdActions.innerHTML = '';
-      const saveBtn = document.createElement('button'); saveBtn.textContent = 'Salvar'; saveBtn.className = 'secondary';
-      const cancelBtn = document.createElement('button'); cancelBtn.textContent = 'Cancelar'; cancelBtn.className = 'danger';
-      tdActions.appendChild(saveBtn); tdActions.appendChild(cancelBtn);
-      saveBtn.addEventListener('click', async () => { const nv = editInput.value; if (!nv) { alert('Selecione uma data válida.'); return; } list[idx].dateISO = nv; await saveDates(list); refresh(); });
-      cancelBtn.addEventListener('click', () => { tdActions.innerHTML = prevActions; refresh(); });
-    }
-  });
-
-  refresh();
-}
-
-// Equal-Weight Rebalance Plan panel (Top N from checklist)
-function initEqualWeightPlanPanel() {
-  const HOST_ID = 'ew-plan-panel-host';
-  if (document.getElementById(HOST_ID)) return;
-
-  // Find anchor above the main table
-  const tableBody = document.querySelector('.collapsible-body');
-  const host = document.createElement('div');
-  host.id = HOST_ID;
-  if (tableBody && tableBody.parentElement) tableBody.parentElement.insertBefore(host, tableBody);
-  else document.body.insertBefore(host, document.body.firstChild);
-
-  const root = host.attachShadow({ mode: 'open' });
-  const wrap = document.createElement('div');
-  wrap.innerHTML = `
-    <style>
-      :host { all: initial; display:block; width:100%; }
-      .card { width:100%; background:#fff; color:#1f2937; border:1px solid #e5e7eb; border-radius:10px; box-shadow:0 2px 8px rgba(0,0,0,.08); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; margin: 12px 0; }
-      .header { display:flex; align-items:center; justify-content:space-between; padding:10px 12px; border-bottom:1px solid #f3f4f6; background:#f9fafb; border-top-left-radius:10px; border-top-right-radius:10px; }
-      .title { font-weight:700; font-size:14px; margin:0; }
-      .controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-      .toggle-btn { padding:6px 10px; border:1px solid #e5e7eb; background:#eef2ff; color:#1f2937; border-radius:6px; font-size:12px; cursor:pointer; }
-      select, input[type="text"] { padding:6px 8px; border:1px solid #e5e7eb; border-radius:6px; font-size:12px; background:#fff; }
-      .body { padding:10px 12px; }
-      .table-wrap { max-height:420px; overflow:auto; border-top:1px solid #f3f4f6; margin-top:8px; }
-      table { width:100%; border-collapse:collapse; font-size:12px; }
-      thead th { position:sticky; top:0; background:#f9fafb; z-index:1; text-align:left; padding:6px 8px; border-bottom:1px solid #e5e7eb; }
-      tbody td { padding:6px 8px; border-bottom:1px solid #f3f4f6; vertical-align:middle; }
-      .num { text-align:right; }
-      .muted { color:#6b7280; }
-      /* Highlight rows for tickers already in the portfolio */
-      tr.row-holding td { background:#e8f5e9; }
-      tr.row-holding td:nth-child(2) { color:#2e7d32; font-weight:700; }
-      .mode { display:flex; align-items:center; gap:6px; }
-      .mode label { display:flex; align-items:center; gap:4px; cursor:pointer; }
-    </style>
-    <div class="card">
-      <div class="header">
-        <h3 class="title">Plano de Rebalanceamento (Equal-Weight)</h3>
-        <div class="controls">
-          <label>Top
-            <select id="ewN">
-              <option value="10" selected>10</option>
-              <option value="15">15</option>
-              <option value="20">20</option>
-            </select>
-          </label>
-          <label>Total (R$)
-            <input type="text" id="ewTotal" size="12"/>
-          </label>
-          <span class="mode">
-            <label title="Compra com base no orçamento, sem vender posições."><input type="radio" name="ewMode" value="investir" checked /> Investir</label>
-            <label title="Ajusta quantidades para chegar ao alvo por ativo; só considera compras adicionais."><input type="radio" name="ewMode" value="rebalancear" /> Rebalancear</label>
-          </span>
-          
-          <button id="ewToggle" class="toggle-btn" type="button">Ocultar</button>
-        </div>
-      </div>
-      <div class="body" id="ewBodyWrap">
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Rank</th>
-                <th>Ticker</th>
-                <th class="num">Preço</th>
-                <th class="num">Qtd atual</th>
-                <th class="num">Valor atual</th>
-                <th class="num">Alvo por ativo</th>
-                <th class="num">Valor após</th>
-                <th class="num">Falta (R$)</th>
-                <th class="num">Qtd p/ comprar</th>
-                <th class="num">Custo estimado</th>
-              </tr>
-            </thead>
-            <tbody id="ewBody"></tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  `;
-  root.appendChild(wrap);
-
-  const $ = (sel) => root.querySelector(sel);
-  const ewN = $('#ewN');
-  const ewTotal = $('#ewTotal');
-  const ewBody = $('#ewBody');
-  const ewBodyWrap = $('#ewBodyWrap');
-  const ewToggle = $('#ewToggle');
-  const ewModeInputs = root.querySelectorAll('input[name="ewMode"]');
-  let ewMode = 'investir';
-  const MODE_KEY = 'ew_mode';
-  function loadMode() { return new Promise((resolve) => { try { chrome.storage.sync.get([MODE_KEY], (r) => resolve(r?.[MODE_KEY] || 'investir')); } catch { resolve('investir'); } }); }
-  function saveMode(v) { return new Promise((resolve) => { try { chrome.storage.sync.set({ [MODE_KEY]: v }, () => resolve()); } catch { resolve(); } }); }
-  
-
-  // Utils (pt-BR parsing/formatting)
-  function parseMoneyBR(text) {
-    if (text == null) return NaN;
-    let s = String(text).replace(/R\$|\s/g, '');
-    s = s.replace(/\./g, '').replace(/,/g, '.');
-    const n = Number(s);
-    return Number.isFinite(n) ? n : NaN;
-  }
-  function parseIntBR(text) {
-    if (text == null) return NaN;
-    const s = String(text).replace(/\./g, '').replace(/\s/g, '');
-    const n = parseInt(s, 10);
-    return Number.isFinite(n) ? n : NaN;
-  }
-  function fmtBRL(n) { try { return n.toLocaleString('pt-BR', { style:'currency', currency:'BRL' }); } catch { return `R$ ${n.toFixed(2)}`; } }
-
-  // Prefer the FIRST value shown in the page header (sensitive-field fw-600)
-  function detectFirstSensitiveTotal() {
-    const el = document.querySelector('span.sensitive-field.fw-600');
-    if (!el) return NaN;
-    const v = parseMoneyBR(el.textContent);
-    return Number.isFinite(v) ? v : NaN;
-  }
-
-  function detectPortfolioTotal() {
-    let maxVal = 0;
-    document.querySelectorAll('span.sensitive-field.fw-600').forEach((sp) => {
-      const v = parseMoneyBR(sp.textContent);
-      if (Number.isFinite(v)) maxVal = Math.max(maxVal, v);
-    });
-    if (maxVal > 0) return maxVal;
-    // Fallback: sum of currentValue if available, else price*quantity
-    let sum = 0;
-    document.querySelectorAll('tbody.list tr.item').forEach((r) => {
-      const cv = r.querySelector('td[data-key="currentValue"]');
-      let val = NaN;
-      if (cv) {
-        val = Number(cv.getAttribute('title'));
-        if (!Number.isFinite(val)) val = parseMoneyBR(cv.textContent);
-      }
-      if (!Number.isFinite(val)) {
-        const p = r.querySelector('td[data-key="price"]');
-        const q = r.querySelector('td[data-key="quantity"]');
-        let price = Number(p?.getAttribute('title'));
-        if (!Number.isFinite(price)) price = parseMoneyBR(p?.textContent);
-        const qty = Number(q?.getAttribute('title')) || parseIntBR(q?.textContent);
-        if (Number.isFinite(price) && Number.isFinite(qty)) val = price * qty;
-      }
-      if (Number.isFinite(val)) sum += val;
-    });
-    return sum;
-  }
-
-  function readHoldingsFromPage() {
-    const map = Object.create(null);
-    document.querySelectorAll('tbody.list tr.item').forEach((r) => {
-      const codeCell = r.querySelector('td[data-key="code"] .ticker');
-      const code = (codeCell?.textContent || '').trim().toUpperCase();
-      if (!code) return;
-      const p = r.querySelector('td[data-key="price"]');
-      const q = r.querySelector('td[data-key="quantity"]');
-      let price = Number(p?.getAttribute('title'));
-      if (!Number.isFinite(price)) price = parseMoneyBR(p?.textContent);
-      const qty = Number(q?.getAttribute('title')) || parseIntBR(q?.textContent);
-      map[code] = { price: Number.isFinite(price) ? price : NaN, qty: Number.isFinite(qty) ? qty : 0 };
-    });
-    return map;
-  }
-
-  function fetchTopNFromAPI(cb) {
-    chrome.runtime.sendMessage({ type: 'GET_TOPN_CHECKLIST' }, (resp) => {
-      if (resp && resp.ok && resp.json && Array.isArray(resp.json.data)) cb(null, resp.json.data);
-      else cb(new Error(resp?.error || 'fetch checklist failed'));
-    });
-  }
-
-  function normalizeChecklist(arr) {
-    return (arr || []).map((r) => ({
-      rank: Number(r.final_rank ?? r.rank ?? r.fm_rank),
-      code: String(r.ticker || r.code || r.symbol || '').trim().toUpperCase(),
-      price: Number(r.price || r.current_price || r.close || r.last || r.preco)
-    })).filter(x => x.code && Number.isFinite(x.rank)).sort((a,b) => a.rank - b.rank);
-  }
-
-  // integer equal-weight allocator implemented in recompute()
-
-  function recompute() {
-    const N = Number(ewN.value) || 10;
-    const total = parseMoneyBR(ewTotal.value);
-    const holdings = readHoldingsFromPage();
-    fetchTopNFromAPI((err, data) => {
-      const normalized = normalizeChecklist(data);
-      const top = normalized.slice(0, N);
-      const targetPer = Number.isFinite(total) && total > 0 ? total / N : 0;
-      ewBody.innerHTML = '';
-      const computed = [];
-      top.forEach((it) => {
-        const fromPage = holdings[it.code] || { price: NaN, qty: 0 };
-        const price = Number.isFinite(it.price) && it.price > 0 ? it.price : fromPage.price;
-        const qty = Number.isFinite(fromPage.qty) ? fromPage.qty : 0;
-        const currentAmount = Number.isFinite(price) ? price * qty : NaN;
-        computed.push({
-          rank: it.rank,
-          code: it.code,
-          price,
-          qty,
-          currentAmount,
-          targetPer,
-          // rest computed later by integer allocator
-        });
-      });
-      // Integer allocation: two modes ('investir' vs 'rebalancear')
-      let budgetCents = Number.isFinite(total) && total > 0 ? Math.round(total * 100) : 0;
-      let spendMap = Object.create(null);
-      let qtyMap = Object.create(null);
-
-      if (ewMode === 'rebalancear') {
-        // Interpret total as target final soma(ValueApós) dos Top N.
-        // Portanto, o orçamento disponível para compras adicionais é: total - soma(ValorAtual).
-        const targetTotalCents = Number.isFinite(total) && total > 0 ? Math.round(total * 100) : 0;
-        const sumBaseCents = computed.reduce((acc, row) => acc + (Number.isFinite(row.currentAmount) ? Math.round(row.currentAmount * 100) : 0), 0);
-        budgetCents = Math.max(0, targetTotalCents - sumBaseCents);
-        // Rebalancear: compute target qty and buy only the additional quantity
-        const items = computed.map((row) => {
-          const priceCents = Number.isFinite(row.price) && row.price > 0 ? Math.round(row.price * 100) : 0;
-          const baseCents = Number.isFinite(row.currentAmount) ? Math.round(row.currentAmount * 100) : 0;
-          const targetCents = Number.isFinite(row.targetPer) ? Math.round(row.targetPer * 100) : 0;
-          const targetQty = priceCents > 0 ? Math.floor(targetCents / priceCents) : 0;
-          const baseQty = Number.isFinite(row.qty) ? row.qty : 0;
-          const deltaQty = Math.max(0, targetQty - baseQty);
-          const deficitCents = Math.max(0, targetCents - baseCents);
-          return { code: row.code, rank: row.rank, priceCents, baseCents, targetCents, targetQty, deltaQty, deficitCents, q: 0, spendCents: 0 };
-        });
-
-        const minEligible = () => {
-          let m = Number.MAX_SAFE_INTEGER;
-          for (const it of items) if (it.priceCents > 0 && it.deltaQty > 0) m = Math.min(m, it.priceCents);
-          return m;
-        };
-        const canBuyAny = () => items.some((it) => it.deltaQty > 0 && it.priceCents > 0 && it.priceCents <= budgetCents);
-        while (canBuyAny() && budgetCents >= minEligible()) {
-          // Update deficits based on current spend
-          for (const it of items) {
-            const after = it.baseCents + it.spendCents;
-            it.deficitCents = Math.max(0, it.targetCents - after);
-          }
-          // Pick best by highest deficit ratio, then higher deficit, then lower price, then better rank
-          let best = null;
-          let bestRatio = -1;
-          for (const it of items) {
-            if (it.deltaQty <= 0 || it.priceCents <= 0 || it.priceCents > budgetCents) continue;
-            const ratio = it.priceCents > 0 ? (it.deficitCents / it.priceCents) : 0;
-            if (
-              ratio > bestRatio ||
-              (Math.abs(ratio - bestRatio) < 1e-9 && (
-                it.deficitCents > (best?.deficitCents ?? -1) ||
-                (it.deficitCents === (best?.deficitCents ?? -1) && (
-                  it.priceCents < (best?.priceCents ?? Number.MAX_SAFE_INTEGER) ||
-                  (it.priceCents === (best?.priceCents ?? 0) && it.rank < (best?.rank ?? 1e9))
-                ))
-              ))
-            ) {
-              best = it; bestRatio = ratio;
-            }
-          }
-          if (!best) break;
-          // Buy 1 share
-          best.q += 1;
-          best.deltaQty -= 1;
-          best.spendCents += best.priceCents;
-          budgetCents -= best.priceCents;
-        }
-
-        // Map results
-        spendMap = Object.create(null);
-        qtyMap = Object.create(null);
-        for (const it of items) { spendMap[it.code] = (it.spendCents || 0) / 100; qtyMap[it.code] = it.q || 0; }
-      } else {
-        // Investir: buy towards targets and then equalize values with remaining budget
-        const items = computed.map((row) => {
-          const priceCents = Number.isFinite(row.price) && row.price > 0 ? Math.round(row.price * 100) : 0;
-          const baseCents = Number.isFinite(row.currentAmount) ? Math.round(row.currentAmount * 100) : 0;
-          const targetCents = Number.isFinite(row.targetPer) ? Math.round(row.targetPer * 100) : 0;
-          const deficitCents = Math.max(0, targetCents - baseCents);
-          return { code: row.code, rank: row.rank, priceCents, baseCents, targetCents, deficitCents, q: 0, spendCents: 0 };
-        });
-
-        const minPrice = () => {
-          let m = Number.MAX_SAFE_INTEGER;
-          for (const it of items) if (it.priceCents > 0) m = Math.min(m, it.priceCents);
-          return m;
-        };
-
-        const canAffordAny = () => items.some((it) => it.priceCents > 0 && it.priceCents <= budgetCents);
-        while (canAffordAny() && budgetCents >= minPrice()) {
-          // Update dynamic deficits based on current spend
-          for (const it of items) {
-            const after = it.baseCents + it.spendCents;
-            it.deficitCents = Math.max(0, it.targetCents - after);
-          }
-
-          // Prefer items still below initial target; else pick the one with smallest valueAfter
-          const eligByDef = items.filter((it) => it.deficitCents > 0 && it.priceCents > 0 && it.priceCents <= budgetCents);
-
-          let best = null;
-          if (eligByDef.length) {
-            let bestRatio = -1;
-            for (const it of eligByDef) {
-              const ratio = it.deficitCents / it.priceCents;
-              if (
-                ratio > bestRatio ||
-                (Math.abs(ratio - bestRatio) < 1e-9 && (
-                  it.priceCents < (best?.priceCents ?? Number.MAX_SAFE_INTEGER) ||
-                  (it.priceCents === (best?.priceCents ?? 0) && it.rank < (best?.rank ?? 1e9))
-                ))
-              ) {
-                best = it; bestRatio = ratio;
-              }
-            }
-          } else {
-            // All at/above target; continue equalizing by raising the lowest valueAfter
-            let bestVal = Number.MAX_SAFE_INTEGER;
-            for (const it of items) {
-              if (it.priceCents <= 0 || it.priceCents > budgetCents) continue;
-              const after = it.baseCents + it.spendCents;
-              if (
-                after < bestVal ||
-                (after === bestVal && (
-                  it.priceCents < (best?.priceCents ?? Number.MAX_SAFE_INTEGER) ||
-                  (it.priceCents === (best?.priceCents ?? 0) && it.rank < (best?.rank ?? 1e9))
-                ))
-              ) {
-                best = it; bestVal = after;
-              }
-            }
-            if (!best) break;
-          }
-
-          // Buy 1 share of 'best'
-          best.q += 1;
-          best.spendCents += best.priceCents;
-          budgetCents -= best.priceCents;
-        }
-
-        // Map results back
-        spendMap = Object.create(null);
-        qtyMap = Object.create(null);
-        for (const it of items) { spendMap[it.code] = (it.spendCents || 0) / 100; qtyMap[it.code] = it.q || 0; }
-      }
-
-      // Render main table with resulting allocation
-      computed.forEach((row) => {
-        const tr = document.createElement('tr');
-        const cost = Number(spendMap[row.code] || 0);
-        const valueAfter = (Number.isFinite(row.currentAmount) ? row.currentAmount : 0) + cost;
-        const faltaAfter = Number.isFinite(row.targetPer) ? Math.max(0, row.targetPer - valueAfter) : NaN;
-        const qtyToBuy = Number(qtyMap[row.code] || 0);
-        if (Number.isFinite(row.qty) && row.qty > 0) tr.classList.add('row-holding');
-        tr.innerHTML = `
-          <td>${row.rank}</td>
-          <td>${row.code}</td>
-          <td class="num">${Number.isFinite(row.price) ? fmtBRL(row.price) : '<span class="muted">—</span>'}</td>
-          <td class="num">${Number.isFinite(row.qty) ? row.qty : '<span class="muted">—</span>'}</td>
-          <td class="num">${Number.isFinite(row.currentAmount) ? fmtBRL(row.currentAmount) : '<span class="muted">—</span>'}</td>
-          <td class="num">${Number.isFinite(row.targetPer) ? fmtBRL(row.targetPer) : '<span class="muted">—</span>'}</td>
-          <td class="num">${(Number.isFinite(row.currentAmount) || Number.isFinite(cost)) ? fmtBRL(valueAfter) : '<span class="muted">—</span>'}</td>
-          <td class="num">${Number.isFinite(faltaAfter) ? fmtBRL(faltaAfter) : '<span class="muted">—</span>'}</td>
-          <td class="num">${qtyToBuy > 0 ? qtyToBuy : '<span class="muted">—</span>'}</td>
-          <td class="num">${fmtBRL(cost)}</td>
-        `;
-        ewBody.appendChild(tr);
-      });
-
-      // Append remainder as the last row
-      const remainder = Math.max(0, budgetCents) / 100;
-      const remTr = document.createElement('tr');
-      remTr.innerHTML = `
-        <td></td>
-        <td><strong>Sobra</strong></td>
-        <td class="num"><span class="muted">—</span></td>
-        <td class="num"><span class="muted">—</span></td>
-        <td class="num"><span class="muted">—</span></td>
-        <td class="num"><span class="muted">—</span></td>
-        <td class="num"><span class="muted">—</span></td>
-        <td class="num"><span class="muted">—</span></td>
-        <td class="num">—</td>
-        <td class="num">${fmtBRL(remainder)}</td>
-      `;
-      ewBody.appendChild(remTr);
-    });
-  }
-
-  // Prefill total with detected portfolio total
-  const first = detectFirstSensitiveTotal();
-  const detected = Number.isFinite(first) && first > 0 ? first : detectPortfolioTotal();
-  if (Number.isFinite(detected) && detected > 0) ewTotal.value = detected.toLocaleString('pt-BR', { style:'currency', currency:'BRL' });
-  else ewTotal.value = '';
-
-  // Events
-  ewN.addEventListener('change', recompute);
-  ewTotal.addEventListener('change', () => { // keep as BR currency if user typed raw number
-    const n = parseMoneyBR(ewTotal.value);
-    if (Number.isFinite(n)) ewTotal.value = n.toLocaleString('pt-BR', { style:'currency', currency:'BRL' });
-    recompute();
-  });
-  // Mode change
-  ewModeInputs.forEach((inp) => {
-    inp.addEventListener('change', async () => {
-      if (inp.checked) {
-        ewMode = inp.value === 'rebalancear' ? 'rebalancear' : 'investir';
-        await saveMode(ewMode);
-        recompute();
-      }
-    });
-  });
-
-  // Persisted collapse state
-  const COLLAPSE_KEY = 'ew_plan_collapsed';
-  function loadCollapsed() { return new Promise((resolve) => { try { chrome.storage.sync.get([COLLAPSE_KEY], (r) => resolve(Boolean(r?.[COLLAPSE_KEY]))); } catch { resolve(false); } }); }
-  function saveCollapsed(v) { return new Promise((resolve) => { try { chrome.storage.sync.set({ [COLLAPSE_KEY]: Boolean(v) }, () => resolve()); } catch { resolve(); } }); }
-
-  function applyCollapseState(collapsed) {
-    if (!ewBodyWrap || !ewToggle) return;
-    ewBodyWrap.style.display = collapsed ? 'none' : 'block';
-    ewToggle.textContent = collapsed ? 'Mostrar' : 'Ocultar';
-  }
-
-  ewToggle.addEventListener('click', async () => {
-    const nowCollapsed = ewBodyWrap.style.display !== 'none' ? true : false;
-    applyCollapseState(nowCollapsed);
-    await saveCollapsed(nowCollapsed);
-  });
-
-  // Load initial collapsed state
-  loadCollapsed().then((c) => applyCollapseState(c));
-  // Load initial mode
-  loadMode().then((m) => {
-    ewMode = m === 'rebalancear' ? 'rebalancear' : 'investir';
-    ewModeInputs.forEach((inp) => { inp.checked = (inp.value === ewMode); });
-    recompute();
-  });
-
-  // Recompute on table changes (SPA)
-  const tbody = document.querySelector('tbody.list');
-  if (tbody) {
-    const obs = new MutationObserver(() => recompute());
-    obs.observe(tbody, { childList: true, subtree: false });
-  }
-
-  // Initial
-  // recompute is also called after mode load
-}
