@@ -1,7 +1,7 @@
 // Background service worker (MV3)
 // - Centraliza chamadas à API e automações
 
-const DEFAULT_API_BASE = 'https://extencao-ppf6qzmyl-daniels-projects-b07af66f.vercel.app';
+const DEFAULT_API_BASE = 'https://extencao-nl3c9opo1-daniels-projects-b07af66f.vercel.app';
 
 function getApiBase() {
   return new Promise((resolve) => {
@@ -48,11 +48,35 @@ async function fetchI10Scores() {
 
 async function fetchTopNChecklist(source = 'fm') {
   const base = await getApiBase();
-  const endpoint = source === 'fm_inv10' ? '/api/checklist-inv10' : '/api/checklist';
+  let endpoint;
+  switch (source) {
+    case 'fm_inv10':
+      endpoint = '/api/checklist-inv10';
+      break;
+    case 'magic_inv10+sum':
+      endpoint = '/api/si-download';
+      break;
+    default:
+      endpoint = '/api/checklist';
+      break;
+  }
   const url = base.replace(/\/$/, '') + endpoint;
   const resp = await fetch(url);
-  if (!resp.ok) throw new Error('HTTP ' + resp.status);
-  return resp.json();
+  const text = await resp.text().catch(() => '');
+  let json = null;
+  if (text) {
+    try { json = JSON.parse(text); }
+    catch { json = null; }
+  }
+  if (!resp.ok) {
+    const detail = json && json.error ? ` - ${json.error}` : text ? ` - ${text.slice(0, 200)}` : '';
+    throw new Error(`HTTP ${resp.status}${detail}`);
+  }
+  if (json == null) throw new Error('Resposta inválida da API');
+  if (json && json.ok === false) {
+    throw new Error(json.error ? String(json.error) : 'API retornou erro');
+  }
+  return json;
 }
 
 let fmAbortController = null;

@@ -1,13 +1,23 @@
-// Vercel Serverless Function: POST /api/si-download
-// - Faz download do CSV da página de "Busca Avançada" do StatusInvest
-// - Sem navegador headless: baixa a página, encontra o link de download e faz requisição direta
-// - Retorna o CSV e salva em /tmp
+// Vercel Serverless Function: GET/POST /api/si-download
+// Agora retorna os dados persistidos em tb_formulamagica_inv10sum
+
+let pool;
 
 function setCors(_req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
   res.setHeader('Access-Control-Max-Age', '86400');
+}
+
+async function getPool() {
+  if (pool) return pool;
+  const { Pool } = require('pg');
+  const connStr = process.env.DATABASE_URL;
+  if (!connStr) throw new Error('Missing env: DATABASE_URL');
+  const needsSSL = !/localhost|127\.0\.0\.1/i.test(connStr);
+  pool = new Pool({ connectionString: connStr, ssl: needsSSL ? { rejectUnauthorized: false } : false });
+  return pool;
 }
 
 function isAuthorized(req) {
@@ -18,94 +28,75 @@ function isAuthorized(req) {
   const provided = hdr.slice(7).trim();
   return provided && provided === token;
 }
-const cheerio = require('cheerio');
-
-function fileNameForToday() {
-  const now = new Date();
-  const dd = String(now.getDate()).padStart(2, '0');
-  return `last_downloaddia${dd}.csv`;
-}
-
-function withTimeout(promise, ms, label) {
-  const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), ms);
-  const p = (async () => {
-    try {
-      const r = await promise(ac.signal);
-      return r;
-    } finally { clearTimeout(t); }
-  })();
-  p.catch(() => {});
-  return { promise: p, signal: ac.signal };
-}
-
-async function fetchText(url, headers = {}, timeoutMs = 45000) {
-  const controller = new AbortController();
-  const to = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const resp = await fetch(url, { method: 'GET', headers, signal: controller.signal });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    return await resp.text();
-  } finally { clearTimeout(to); }
-}
-
-async function fetchBuffer(url, headers = {}, timeoutMs = 60000) {
-  const controller = new AbortController();
-  const to = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const resp = await fetch(url, { method: 'GET', headers, signal: controller.signal });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const arr = await resp.arrayBuffer();
-    return Buffer.from(arr);
-  } finally { clearTimeout(to); }
-}
 
 export default async function handler(req, res) {
   setCors(req, res);
   if (req.method === 'OPTIONS') return res.status(204).end();
-  if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'Method Not Allowed' });
+  if (req.method !== 'GET' && req.method !== 'POST') {
+    return res.status(405).json({ ok: false, error: 'Method Not Allowed' });
+  }
   if (!isAuthorized(req)) return res.status(401).json({ ok: false, error: 'Unauthorized' });
 
-  const targetUrl = 'https://statusinvest.com.br/acoes/busca-avancada';
-
   try {
-    const headers = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119 Safari/537.36',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7'
-    };
-    const html = await fetchText(targetUrl, headers, 45000);
-    if (/cloudflare|attention required|captcha/i.test(html)) {
-      return res.status(503).json({ ok: false, error: 'Bloqueado (Cloudflare/403?)' });
-    }
-    const $ = cheerio.load(html);
-    let href = null;
-    const byClass = $('a.btn-download').first();
-    if (byClass && byClass.attr) href = byClass.attr('href') || href;
-    if (!href) {
-      $('a').each((_, el) => {
-        const t = ($(el).text() || '').trim();
-        const h = ($(el).attr('href') || '').trim();
-        if (/download|exportar/i.test(t) || /download|export|csv/i.test(h)) { href = h; return false; }
-      });
-    }
-    if (!href) return res.status(404).json({ ok: false, error: 'Link de download não encontrado' });
-    const abs = href.startsWith('http') ? href : new URL(href, 'https://statusinvest.com.br').toString();
-    const csvBuf = await fetchBuffer(abs, { ...headers, 'Accept': 'text/csv,*/*' }, 60000);
+    const db = await getPool();
+    const buildSql = (relation) => `
+      SELECT
+        fm.ticker,
+        fm.empresa,
+        fm.setor,
+        fm.market_cap,
+        fm.liquidez,
+        fm.margem_ebit,
+        fm.roic,
+        fm.i10_score,
+        fm.ebit,
+        fm.ev,
+        fm.ey,
+        fm.rank_ey,
+        fm.rank_roic,
+        fm.mf_rank,
+        fm.mf_rank_final,
+        fm.composite_score,
+        fm.mf_rank_final_inv10sum AS final_rank,
+        fm.generated_at,
+        (
+          CASE
+            WHEN si.data->>'PRECO' IS NOT NULL AND si.data->>'PRECO' != ''
+            THEN CAST(REPLACE(REPLACE(si.data->>'PRECO', '.', ''), ',', '.') AS numeric)
+            ELSE NULL
+          END
+        ) AS price
+      FROM ${relation} fm
+      LEFT JOIN tb_statusinvest si ON fm.ticker = si.ticker
+      WHERE fm.liquidez >= 1000000 AND fm.market_cap >= 90000000
+      ORDER BY
+        fm.mf_rank_final_inv10sum NULLS LAST,
+        fm.ticker ASC;
+    `;
 
-    const fs = require('fs');
-    const path = require('path');
-    const outName = fileNameForToday();
-    const outPath = path.join('/tmp', outName);
-    try { fs.writeFileSync(outPath, csvBuf); } catch {}
+    let rows;
+    try {
+      ({ rows } = await db.query(buildSql('tb_formulamagica_inv10sum')));
+    } catch (err) {
+      const msg = String(err?.message || err);
+      if (/tb_formulamagica_inv10sum/i.test(msg)) {
+        try {
+          ({ rows } = await db.query(buildSql('tb_formulamagica_inv10_sum')));
+        } catch (fallbackErr) {
+          const fbMsg = String(fallbackErr?.message || fallbackErr);
+          if (/tb_formulamagica_inv10_sum/i.test(fbMsg)) {
+            return res.status(200).json({ ok: true, count: 0, data: [], reason: 'no_data_table' });
+          }
+          throw fallbackErr;
+        }
+      } else {
+        throw err;
+      }
+    }
 
-    return res.status(200).json({ ok: true, file: outName, size: csvBuf.length, content_type: 'text/csv', csv: csvBuf.toString('utf8') });
+    return res.status(200).json({ ok: true, count: rows.length, data: rows });
   } catch (err) {
-    const msg = String(err && (err.message || err));
-    if (/403|cloudflare|captcha/i.test(msg)) {
-      return res.status(503).json({ ok: false, error: 'Bloqueado (Cloudflare/403?)', detail: msg });
-    }
-    console.error('[si-download] error:', err);
-    return res.status(500).json({ ok: false, error: msg });
+    console.error('[api/si-download] error:', err);
+    return res.status(500).json({ ok: false, error: String(err && (err.message || err)) });
   }
 }

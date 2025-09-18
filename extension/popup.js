@@ -40,6 +40,8 @@
   const progressText = $('#progressText');
   const progressInfo = $('#progressInfo');
   let jobPollIv = null;
+  let runAllAfterInv10 = false;
+  let runAllMinTrue = 4;
   function setProgress(total, done) {
     if (!progress || !progressBar || !progressText) return;
     total = Number(total || 0); done = Number(done || 0);
@@ -69,6 +71,23 @@
       }
     } catch {}
     progressInfo.textContent = `Etapa: ${stage}${current ? ' • Ticker: ' + current : ''}${etaTxt}`;
+  }
+
+  function triggerFmFromInv10(minTrue = 4) {
+    setStatus('Calculando ranking combinado (Inv10 + FM)...');
+    try {
+      chrome.runtime.sendMessage({ type: 'FM_FROM_INV10', min_true: minTrue }, (resp) => {
+        if (resp && resp.ok) {
+          const processed = Number(resp.json?.processed || 0);
+          const sumProcessed = Number(resp.json?.sum_processed || 0);
+          setStatus(`Ranking Inv10+FM concluído. Registros: ${processed} • Combinado: ${sumProcessed}`);
+        } else {
+          setStatus(`Erro ao calcular Inv10+FM: ${resp?.error || 'falha desconhecida'}`);
+        }
+      });
+    } catch (err) {
+      setStatus(String(err));
+    }
   }
 
   function stopJobPolling() {
@@ -397,22 +416,13 @@
       }
 
       if (tipo === 'inv10fm') {
-        setStatus('Gerando ranking com base no Investidor10 (≥4)...');
-        try {
-          chrome.runtime.sendMessage({ type: 'FM_FROM_INV10', min_true: 4 }, (resp) => {
-            if (resp && resp.ok) {
-              const p = resp.json && (resp.json.processed || 0);
-              setStatus('Ranking Inv10+FM concluído. Registros: ' + p);
-            } else {
-              setStatus('Erro Inv10+FM');
-            }
-          });
-        } catch (e) { setStatus(String(e)); }
+        triggerFmFromInv10(4);
         return;
       }
 
       if (tipo === 'todos') {
         if (!sel.content) { setStatus('Item sem conteúdo. Faça o upload novamente.'); return; }
+        runAllAfterInv10 = false;
         setStatus('Executando Fórmula Mágica...');
         try {
           chrome.runtime.sendMessage({ type: 'FM_CALCULAR', csv: sel.content }, (resp) => {
@@ -429,9 +439,16 @@
             }, (settings) => {
               const exclusionList = new Set((settings.POPUP_EXCLUSION_LIST || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean));
               const minLiquidity = Number(settings.POPUP_MIN_LIQUIDITY) || 1000000;
+              const minTrueCount = 4;
 
               const allStocks = extractStocksFromCsv(sel.content);
-              if (!allStocks.length) { setStatus('FM ok. Não foi possível extrair tickers para o Investidor10 (verificar colunas).'); return; }
+              if (!allStocks.length) {
+                setStatus('FM ok. Não foi possível extrair tickers para o Investidor10 (verificar colunas).');
+                setProgress(0, 0);
+                setProgressInfo(null);
+                triggerFmFromInv10(minTrueCount);
+                return;
+              }
 
               const stocksToScrape = allStocks.filter(stock =>
                   !exclusionList.has(stock.ticker) &&
@@ -440,14 +457,36 @@
               );
               const tickers = stocksToScrape.map(s => s.ticker);
 
-              if (!tickers.length) { setStatus('FM ok. Nenhuma ação no CSV atende aos critérios para o Investidor10.'); return; }
+              if (!tickers.length) {
+                setStatus('FM ok. Nenhuma ação no CSV atende aos critérios para o Investidor10. Calculando ranking combinado...');
+                setProgress(0, 0);
+                setProgressInfo(null);
+                triggerFmFromInv10(minTrueCount);
+                return;
+              }
 
                 try {
+                  setProgress(tickers.length, 0);
+                  setProgressInfo({ running: true, stage: 'init', total: tickers.length, ok: 0, fail: 0, startedAt: new Date().toISOString() });
+                  runAllAfterInv10 = true;
+                  runAllMinTrue = minTrueCount;
                   chrome.runtime.sendMessage({ type: 'INV10_START', tickers }, (r2) => {
                   if (r2 && r2.ok) { setStatus(`INV10 iniciado para ${tickers.length} tickers...`); startJobPolling(); }
-                    else setStatus(`INV10 erro ao iniciar: ${r2 && r2.error ? r2.error : 'falha desconhecida'}`);
+                    else {
+                      runAllAfterInv10 = false;
+                      setStatus(`INV10 erro ao iniciar: ${r2 && r2.error ? r2.error : 'falha desconhecida'}`);
+                      setProgress(0, 0);
+                      setProgressInfo(null);
+                      triggerFmFromInv10(minTrueCount);
+                    }
                   });
-                } catch (e2) { setStatus(String(e2)); }
+                } catch (e2) {
+                  runAllAfterInv10 = false;
+                  setStatus(String(e2));
+                  setProgress(0, 0);
+                  setProgressInfo(null);
+                  triggerFmFromInv10(minTrueCount);
+                }
             });
 
             } else {
@@ -522,6 +561,12 @@
         stopJobPolling();
         // Atualiza histórico
         renderJobHistory();
+        if (runAllAfterInv10) {
+          const wasCanceled = Boolean(j.cancel || j.canceled || (String(j.stage || '').toLowerCase() === 'canceled'));
+          const minTrue = runAllMinTrue;
+          runAllAfterInv10 = false;
+          if (!wasCanceled) triggerFmFromInv10(minTrue);
+        }
       }
     });
   } catch {}

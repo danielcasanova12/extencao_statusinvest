@@ -1138,6 +1138,7 @@
                 <select id="ewSource">
                   <option value="fm" selected>Fórmula Mágica</option>
                   <option value="fm_inv10">FM + Inv10</option>
+                  <option value="magic_inv10+sum">FM + Inv10 (Soma)</option>
                 </select>
               </label>
               <label>Top
@@ -2128,7 +2129,8 @@
       ewMode = m === 'rebalancear' ? 'rebalancear' : 'investir';
       ewModeInputs.forEach((inp) => { inp.checked = (inp.value === ewMode); });
   
-      ewSourceValue = s === 'fm_inv10' ? 'fm_inv10' : 'fm';
+      const validSources = ['fm', 'fm_inv10', 'magic_inv10+sum'];
+      ewSourceValue = validSources.includes(s) ? s : 'fm';
       if (ewSource) ewSource.value = ewSourceValue;
   
       recompute();
