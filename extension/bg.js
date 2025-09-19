@@ -1,7 +1,7 @@
 // Background service worker (MV3)
 // - Centraliza chamadas à API e automações
 
-const DEFAULT_API_BASE = 'https://extencao-nl3c9opo1-daniels-projects-b07af66f.vercel.app';
+const DEFAULT_API_BASE = 'https://extencao-qo0i2zq9e-daniels-projects-b07af66f.vercel.app';
 
 function getApiBase() {
   return new Promise((resolve) => {
@@ -42,8 +42,17 @@ async function fetchFmRanks() {
 async function fetchI10Scores() {
   const base = await getApiBase();
   const resp = await fetch(base.replace(/\/$/, '') + '/api/i10-scores');
-  if (!resp.ok) throw new Error('HTTP ' + resp.status);
-  return resp.json();
+  const responseText = await resp.text();
+  if (!resp.ok) {
+    console.error('[fetchI10Scores] HTTP error:', resp.status, responseText);
+    throw new Error(`HTTP ${resp.status}: ${responseText}`);
+  }
+  try {
+    return JSON.parse(responseText);
+  } catch (parseError) {
+    console.error('[fetchI10Scores] JSON parse error:', parseError, 'Response:', responseText);
+    throw new Error(`JSON parse error: ${parseError.message}`);
+  }
 }
 
 async function fetchTopNChecklist(source = 'fm') {
@@ -54,7 +63,8 @@ async function fetchTopNChecklist(source = 'fm') {
       endpoint = '/api/checklist-inv10';
       break;
     case 'magic_inv10+sum':
-      endpoint = '/api/si-download';
+      // Usar nossa nova API de ranking combinado simples
+      endpoint = '/api/formulamagica-inv10-ranking';
       break;
     default:
       endpoint = '/api/checklist';
@@ -121,6 +131,35 @@ async function postFmFromInv10(minTrue) {
   const json = await resp.json().catch(() => ({}));
   if (!resp.ok) throw new Error(json?.error || ('HTTP ' + resp.status));
   return json;
+}
+
+async function postFmSimpleInv10() {
+  const base = await getApiBase();
+  const token = await getApiToken();
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  
+  console.log('[postFmSimpleInv10] Calling API:', base + '/api/formulamagica/simple-inv10');
+  
+  const resp = await fetch(base.replace(/\/$/, '') + '/api/formulamagica/simple-inv10', {
+    method: 'POST', headers, body: JSON.stringify({})
+  });
+  
+  const responseText = await resp.text();
+  console.log('[postFmSimpleInv10] Response status:', resp.status, 'Response:', responseText);
+  
+  if (!resp.ok) {
+    const errorMsg = `HTTP ${resp.status}: ${responseText}`;
+    console.error('[postFmSimpleInv10] Error:', errorMsg);
+    throw new Error(errorMsg);
+  }
+  
+  try {
+    return JSON.parse(responseText);
+  } catch (parseError) {
+    console.error('[postFmSimpleInv10] JSON parse error:', parseError, 'Response:', responseText);
+    throw new Error(`JSON parse error: ${parseError.message}`);
+  }
 }
 
 // ---- Investidor10 job runner ----
@@ -279,5 +318,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message.type === 'FM_FROM_INV10') {
     (async ()=>{ try { const min = Number(message.min_true || 6); const json = await postFmFromInv10(min); sendResponse({ ok:true, json }); } catch(e){ sendResponse({ ok:false, error:String(e?.message||e) }); } })(); return true;
+  }
+
+  if (message.type === 'FM_SIMPLE_INV10') {
+    (async ()=>{ try { const json = await postFmSimpleInv10(); sendResponse({ ok:true, json }); } catch(e){ sendResponse({ ok:false, error:String(e?.message||e) }); } })(); return true;
   }
 });

@@ -81,7 +81,7 @@ async function ensureTables(db) {
   await db.query(sqlInv10);
 
   const sqlInv10Sum = [
-    'CREATE TABLE IF NOT EXISTS tb_formulamagica_inv10_sum (',
+    'CREATE TABLE IF NOT EXISTS tb_formulamagica_inv10_simple (',
     '  ticker                    text PRIMARY KEY,',
     '  empresa                   text,',
     '  setor                     text,',
@@ -108,13 +108,13 @@ async function ensureTables(db) {
   await db.query(sqlInv10Sum);
 
   const alterStatements = [
-    'ALTER TABLE tb_formulamagica_inv10_sum ADD COLUMN IF NOT EXISTS mf_rank int',
-    'ALTER TABLE tb_formulamagica_inv10_sum ADD COLUMN IF NOT EXISTS inv10_rank int',
-    'ALTER TABLE tb_formulamagica_inv10_sum ADD COLUMN IF NOT EXISTS true_count int',
-    'ALTER TABLE tb_formulamagica_inv10_sum ADD COLUMN IF NOT EXISTS composite_score numeric',
-    'ALTER TABLE tb_formulamagica_inv10_sum ADD COLUMN IF NOT EXISTS mf_rank_final_inv10sum int',
-    "ALTER TABLE tb_formulamagica_inv10_sum ADD COLUMN IF NOT EXISTS source text DEFAULT 'inv10_sum'",
-    'ALTER TABLE tb_formulamagica_inv10_sum ADD COLUMN IF NOT EXISTS generated_at timestamptz default now()'
+    'ALTER TABLE tb_formulamagica_inv10_simple ADD COLUMN IF NOT EXISTS mf_rank int',
+    'ALTER TABLE tb_formulamagica_inv10_simple ADD COLUMN IF NOT EXISTS inv10_rank int',
+    'ALTER TABLE tb_formulamagica_inv10_simple ADD COLUMN IF NOT EXISTS true_count int',
+    'ALTER TABLE tb_formulamagica_inv10_simple ADD COLUMN IF NOT EXISTS composite_score numeric',
+    'ALTER TABLE tb_formulamagica_inv10_simple ADD COLUMN IF NOT EXISTS mf_rank_final_inv10sum int',
+    "ALTER TABLE tb_formulamagica_inv10_simple ADD COLUMN IF NOT EXISTS source text DEFAULT 'inv10_sum'",
+    'ALTER TABLE tb_formulamagica_inv10_simple ADD COLUMN IF NOT EXISTS generated_at timestamptz default now()'
   ];
   for (const sql of alterStatements) {
     try { await db.query(sql); } catch (err) { console.warn('[ensureTables] alter skip:', sql, err?.message || err); }
@@ -122,7 +122,7 @@ async function ensureTables(db) {
 
   try {
     await db.query(
-      'CREATE OR REPLACE VIEW tb_formulamagica_inv10sum AS SELECT * FROM tb_formulamagica_inv10_sum'
+      'CREATE OR REPLACE VIEW tb_formulamagica_inv10_simple AS SELECT * FROM tb_formulamagica_inv10_simple'
     );
   } catch (err) {
     const msg = String(err?.message || err);
@@ -130,12 +130,12 @@ async function ensureTables(db) {
       throw err;
     }
     try {
-      await db.query('DROP VIEW IF EXISTS tb_formulamagica_inv10sum');
+      await db.query('DROP VIEW IF EXISTS tb_formulamagica_inv10_simple');
       await db.query(
-        'CREATE OR REPLACE VIEW tb_formulamagica_inv10sum AS SELECT * FROM tb_formulamagica_inv10_sum'
+        'CREATE OR REPLACE VIEW tb_formulamagica_inv10_simple AS SELECT * FROM tb_formulamagica_inv10_simple'
       );
     } catch (err2) {
-      console.warn('[ensureTables] failed to refresh view tb_formulamagica_inv10sum:', err2?.message || err2);
+      console.warn('[ensureTables] failed to refresh view tb_formulamagica_inv10_simple:', err2?.message || err2);
     }
   }
 }
@@ -311,7 +311,7 @@ export default async function handler(req, res) {
       row.mf_rank_final_inv10sum = Number.isFinite(row.composite_score) ? (idx + 1) : null;
     });
 
-    await db.query('TRUNCATE TABLE tb_formulamagica_inv10_sum');
+    await db.query('TRUNCATE TABLE tb_formulamagica_inv10_simple');
     if (rowsSumOut.length) {
       const sumCols = ['ticker','empresa','setor','market_cap','liquidez','margem_ebit','roic','i10_score','ebit','ev','ey','rank_ey','rank_roic','mf_rank','mf_rank_final','inv10_rank','true_count','composite_score','mf_rank_final_inv10sum','source'];
       const sumParams = [];
@@ -324,7 +324,7 @@ export default async function handler(req, res) {
         const placeholders = sumCols.map((_, i) => '$' + (base + i + 1)).join(',');
         return '(' + placeholders + ')';
       }).join(',');
-      const sumSql = 'INSERT INTO tb_formulamagica_inv10_sum (' + sumCols.join(',') + ') VALUES ' + sumValues;
+      const sumSql = 'INSERT INTO tb_formulamagica_inv10_simple (' + sumCols.join(',') + ') VALUES ' + sumValues;
       await db.query(sumSql, sumParams);
     }
 

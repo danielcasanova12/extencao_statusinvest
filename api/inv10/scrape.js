@@ -94,14 +94,17 @@ async function scrapeOne(tkr) {
   let trueCount = 0;
 
   // The specific checklist items to count, configurable via env var.
-  const defaultChecks = [
-    'Empresa nunca deu prejuízo (ano fiscal)',
-    'Empresa com lucro nos últimos 20 trimestres (5 anos)',
-    'Empresa possui dívida menor que patrimônio',
-    'Empresa apresentou crescimento de receita nos últimos 5 anos',
-    'Empresa apresentou crescimento de lucros nos últimos 5 anos',
-    'Empresa com mais de 5 anos de Bolsa',
-  ];
+const defaultChecks = [
+  'Empresa nunca deu prejuízo (ano fiscal)',
+  'Empresa com lucro nos últimos 20 trimestres (5 anos)',
+  'Empresa possui dívida menor que patrimônio',
+  'Empresa apresentou crescimento de receita nos últimos 5 anos',
+  'Empresa apresentou crescimento de lucros nos últimos 5 anos',
+  'Empresa com mais de 5 anos de Bolsa',
+  'Empresa pagou +5% de dividendos/ano nos últimos 5 anos',
+  'Empresa possui ROE acima de 10%',
+  'Empresa possui liquidez diária acima de US$ 2M',
+];
   const checksFromEnv = (process.env.INV10_TARGET_CHECKS || '').split('|').map(s => s.trim()).filter(Boolean);
   const TARGET_CHECKS = new Set(checksFromEnv.length > 0 ? checksFromEnv : defaultChecks);
 

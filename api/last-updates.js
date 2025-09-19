@@ -72,7 +72,7 @@ export default async function handler(req, res) {
     'tb_formulamagica',
     'tb_inv10',
     'tb_formulamagica_inv10',
-    'tb_formulamagica_inv10_sum',
+    'tb_formulamagica_inv10_simple',
     'tb_statusinvest'];
 
   try {

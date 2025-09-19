@@ -33,16 +33,17 @@ export default async function handler(req, res) {
     const limit = Math.min(parseInt(req.query.limit, 10) || 1000, 5000);
 
     let rows = [];
-    let source = 'view';
+    let source = 'tb_inv10';
     try {
-      const q = `SELECT i10_rank, ticker, i10_score FROM statusinvest_latest_i10_ranking ORDER BY i10_rank LIMIT $1`;
+      // Usar a tabela tb_inv10 que realmente existe
+      const q = `SELECT ticker, true_count as i10_score FROM tb_inv10 ORDER BY true_count DESC NULLS LAST, ticker LIMIT $1`;
       const r = await db.query(q, [limit]);
       rows = r.rows;
     } catch (e) {
-      source = 'table';
-      const q2 = `SELECT ticker, i10_score FROM statusinvest_latest ORDER BY i10_score DESC NULLS LAST, ticker LIMIT $1`;
-      const r2 = await db.query(q2, [limit]);
-      rows = r2.rows;
+      // Fallback caso tb_inv10 não exista ou esteja vazia
+      console.error('[i10-scores] Error accessing tb_inv10:', e.message);
+      source = 'empty';
+      rows = [];
     }
 
     const data = rows.map((r) => ({
@@ -54,7 +55,8 @@ export default async function handler(req, res) {
     // Provide a generated timestamp; if table has a fetched_at, expose the max as well
     let lastUpdated = null;
     try {
-      const { rows: t } = await db.query(`SELECT MAX(i10_fetched_at) AS last FROM statusinvest_latest`);
+      // Usar scraped_at da tabela tb_inv10
+      const { rows: t } = await db.query(`SELECT MAX(scraped_at) AS last FROM tb_inv10`);
       const raw = t?.[0]?.last;
       if (raw) lastUpdated = new Date(raw).toISOString();
     } catch {}

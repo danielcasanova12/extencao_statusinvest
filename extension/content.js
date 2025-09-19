@@ -717,6 +717,951 @@
     });
   }
   
+  // Floating Shadow DOM panel: Portfolio Distribution
+  function initPortfolioDistributionPanel() {
+    const HOST_ID = 'portfolio-distribution-host';
+    if (document.getElementById(HOST_ID)) return; // prevent duplicates
+  
+    const host = document.createElement('div');
+    host.id = HOST_ID;
+    const anchor = document.getElementById('cashposition-result');
+    if (anchor && anchor.parentElement) anchor.insertAdjacentElement('afterend', host);
+    else document.body.appendChild(host);
+
+    const root = host.attachShadow({ mode: 'open' });
+    const wrap = document.createElement('div');
+    wrap.innerHTML = `
+      <style>
+        :host { all: initial; display: block; width: 100%; }
+        .card { width: 100%; background: #fff; color: #1f2937; border: 1px solid #e5e7eb; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; margin: 12px 0; }      
+        .header { display:flex; align-items:center; justify-content:space-between; padding: 10px 12px; border-bottom: 1px solid #f3f4f6; background:#03ab95; color: white; border-top-left-radius:10px; border-top-right-radius:10px; }
+        .title { font-weight: 700; font-size: 14px; margin: 0; color: white; }
+        .body { padding: 10px 12px; }
+        .allocation-table { width:100%; border-collapse:collapse; font-size:12px; margin-top:8px; }
+        .allocation-table th, .allocation-table td { padding:8px 10px; border:1px solid #e5e7eb; text-align:left; }
+        .allocation-table th { background:#f3f4f6; font-weight:600; color:#374151; font-size:11px; }
+        .allocation-table td { background:#fff; }
+        .allocation-table .number { text-align:right; font-family: monospace; }
+        .allocation-table tr:hover { background:#f8fafc; }
+        .allocation-table td:first-child { font-weight:500; }
+        .summary-row { display:flex; gap:12px; justify-content:space-between; margin-bottom:12px; }
+        .summary-item { text-align:center; flex:1; padding:8px; background:#f9fafb; border-radius:6px; border:1px solid #e5e7eb; }
+        .summary-value { font-size:14px; font-weight:600; color:#1f2937; margin-bottom:2px; }
+        .summary-label { font-size:10px; color:#6b7280; }
+        .loading { text-align:center; padding:20px; color:#6b7280; font-style:italic; }
+        button { padding:6px 10px; border:1px solid #d1d5db; background:#03ab95; color:#fff; border-radius:6px; font-size:12px; cursor:pointer; margin-right:6px; }
+        button:hover { background:#028a7a; }
+        .add-row-section { margin:15px 0; text-align:center; }
+        .add-row-btn { background:#6366f1; font-size:12px; padding:8px 15px; }
+        .add-row-btn:hover { background:#5b21b6; }
+        .edit-btn { background:#10b981; color:white; border:none; border-radius:6px; font-size:12px; padding:8px 15px; margin-right:8px; cursor:pointer; }
+        .edit-btn:hover { background:#059669; }
+        .save-btn { background:#f59e0b; color:white; border:none; border-radius:6px; font-size:12px; padding:8px 15px; margin-right:8px; cursor:pointer; }
+        .save-btn:hover { background:#d97706; }
+        .editable-cell { position:relative; }
+        .editable-input { width:60px; padding:2px 4px; border:1px solid #d1d5db; border-radius:3px; text-align:center; font-size:11px; }
+        .editable-input:focus { outline:none; border-color:#03ab95; }
+        .remove-row-btn { background:#dc2626; color:#fff; border:none; padding:2px 6px; border-radius:3px; font-size:10px; cursor:pointer; }
+        .remove-row-btn:hover { background:#b91c1c; }
+      </style>
+      <div class="card" part="card">
+        <div class="header">
+          <h3 class="title">Distribuição da Carteira por Classe</h3>
+          <button id="refreshPortfolio">↻ Atualizar</button>
+        </div>
+        <div class="body">
+          <div class="summary-row">
+            <div class="summary-item">
+              <div class="summary-value" id="totalValue">R$ 0,00</div>
+              <div class="summary-label">Total Carteira</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-value" id="assetsCount">0</div>
+              <div class="summary-label">Total Ativos</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-value" id="lastUpdate">-</div>
+              <div class="summary-label">Última Atualização</div>
+            </div>
+          </div>
+          
+          <div class="add-row-section">
+            <button id="editTableBtn" class="edit-btn">✏️ Editar</button>
+            <button id="saveTableBtn" class="save-btn" style="display:none;">💾 Salvar</button>
+            <button id="addNewRow" class="add-row-btn" style="display:none;">➕ Incluir Nova Classe</button>
+          </div>
+          
+          <div id="distributionContent">
+            <div class="loading">Clique em "Atualizar" para visualizar sua distribuição atual</div>
+          </div>
+        </div>
+      </div>
+    `;
+    root.appendChild(wrap);
+
+    // Edit mode state
+    let isEditMode = false;
+    let tempAllocationData = null; // Temporary data for editing
+
+    const $ = (sel) => root.querySelector(sel);
+
+    // Make real-time update functions available locally
+    function updateTargetInRealTime(className, newValue) {
+      if (!isEditMode || !tempAllocationData) return;
+      
+      const value = parseFloat(newValue) || 0;
+      
+      if (!tempAllocationData[className]) {
+        tempAllocationData[className] = { target: value };
+      } else {
+        tempAllocationData[className].target = value;
+      }
+      
+      // Update total immediately
+      updateTotalTargetPercentage();
+      
+      console.log(`Real-time update: ${className} = ${value}%`);
+    }
+
+    function updateCustomValueInRealTime(className, newValue) {
+      if (!isEditMode || !tempAllocationData) return;
+      
+      const value = parseFloat(newValue) || 0;
+      
+      if (tempAllocationData[className] && tempAllocationData[className].isCustom) {
+        tempAllocationData[className].value = value;
+        
+        // Recalculate the table to show new percentages
+        setTimeout(() => updatePortfolioDistribution(), 100);
+        
+        console.log(`Custom value real-time update: ${className} = ${formatCurrency(value)}`);
+      }
+    }
+
+    // Remove allocation row function
+    async function removeAllocationRow(className) {
+      if (!confirm(`Deseja remover a classe "${className}"?`)) return;
+      
+      if (isEditMode) {
+        // Remove from temporary data AND save to storage immediately
+        if (tempAllocationData && tempAllocationData[className]) {
+          delete tempAllocationData[className];
+          
+          // Save the change permanently to storage
+          await saveAllocationData(tempAllocationData);
+          updatePortfolioDistribution();
+          
+          console.log(`Classe "${className}" removida permanentemente`);
+        }
+      } else {
+        // Remove directly from storage (legacy behavior)
+        const allocationData = await getAllocationData();
+        delete allocationData[className];
+        await saveAllocationData(allocationData);
+        updatePortfolioDistribution();
+        
+        console.log(`Classe "${className}" removida do storage`);
+      }
+    }
+
+    // Update total target percentage display
+    function updateTotalTargetPercentage() {
+      const dataToUse = isEditMode && tempAllocationData ? tempAllocationData : null;
+      
+      if (dataToUse) {
+        // Use temporary data in edit mode
+        const totalTarget = Object.values(dataToUse).reduce((sum, data) => sum + (data.target || 0), 0);
+        updateTotalDisplay(totalTarget);
+      } else {
+        // Use saved data in view mode
+        getAllocationData().then(allocationData => {
+          const totalTarget = Object.values(allocationData).reduce((sum, data) => sum + (data.target || 0), 0);
+          updateTotalDisplay(totalTarget);
+        });
+      }
+    }
+
+    // Helper function to update total display
+    function updateTotalDisplay(totalTarget) {
+      // Update the total target percentage cell
+      const targetCell = document.getElementById('total-target');
+      if (targetCell) {
+        targetCell.textContent = `${totalTarget.toFixed(1)}%`;
+      }
+      
+      // Update the total difference cell
+      const diffCell = document.getElementById('total-diff');
+      if (diffCell) {
+        const diffValue = Math.abs(100 - totalTarget);
+        const isValid = diffValue <= 1;
+        const diffColor = isValid ? '#6b7280' : '#dc2626';
+        const diffIcon = isValid ? '✓' : '⚠️';
+        diffCell.style.color = diffColor;
+        diffCell.innerHTML = `${diffIcon} ${diffValue.toFixed(1)}%`;
+      }
+    }
+    
+    // Asset classification function
+    function classifyAsset(ticker) {
+      ticker = (ticker || '').toUpperCase();
+      
+      // FIIs - geralmente terminam com 11
+      if (/\d{2}$/.test(ticker) && ticker.endsWith('11')) {
+        return 'FIIs';
+      }
+      
+      // ETFs - alguns padrões comuns
+      if (/^(BOVA|SMAL|IVVB|SPXI|BRAX|XINA|PIBB|ISUS|IMAB|IVVB|IFIX|DIVO|FIND|MATB|ECOO|GOVE|BOVX)/.test(ticker)) {
+        return 'ETFs';
+      }
+      
+      // EUA - BDRs geralmente terminam com 34 ou 35
+      if (ticker.endsWith('34') || ticker.endsWith('35')) {
+        return 'EUA';
+      }
+      
+      // Ações - padrão geral
+      return 'Ações';
+    }
+
+    // Format currency
+    function formatCurrency(value) {
+      return new Intl.NumberFormat('pt-BR', {
+        style: 'currency',
+        currency: 'BRL'
+      }).format(value || 0);
+    }
+
+    // Parse BRL currency value to number
+    function parseBRLValue(text) {
+      if (!text || typeof text !== 'string') return 0;
+      
+      try {
+        // Remove "R$" and spaces, then replace thousand separators and decimal separator
+        let cleanValue = text.replace(/R\$\s*/g, '').trim();
+        
+        // Handle negative values
+        const isNegative = cleanValue.startsWith('-');
+        if (isNegative) cleanValue = cleanValue.substring(1);
+        
+        // Replace thousand separators (.) and decimal separator (,)
+        cleanValue = cleanValue.replace(/\./g, '').replace(',', '.');
+        
+        // Check if the clean value contains only valid numeric characters
+        if (!/^\d+(\.\d+)?$/.test(cleanValue)) {
+          console.warn(`[parseBRLValue] Invalid numeric format: "${text}" -> "${cleanValue}"`);
+          return 0;
+        }
+        
+        const number = parseFloat(cleanValue);
+        console.log(`[parseBRLValue] Input: "${text}" -> Clean: "${cleanValue}" -> Number: ${number}`);
+        
+        if (isNaN(number)) {
+          console.error(`[parseBRLValue] Failed to parse: "${text}" -> "${cleanValue}" -> NaN`);
+          return 0;
+        }
+        
+        return isNegative ? -number : number;
+      } catch (error) {
+        console.warn('[Portfolio Totals] Error parsing BRL value:', text, error);
+        return 0;
+      }
+    }
+
+    // Collect portfolio totals by asset class
+    function collectPortfolioTotals() {
+      const totals = {
+        acoes: 0,
+        fiis: 0,
+        etfs: 0,
+        exterior: 0
+      };
+
+      try {
+        // Map of categories to consolidate
+        const categoryMappings = {
+          '1': 'acoes',          // Ações
+          '2': 'fiis',           // FIIs
+          '22': 'fiis',          // FI-Infra
+          '24': 'fiis',          // FIAGRO
+          '6': 'etfs',           // ETF Brasil
+          '901': 'exterior'      // ETF Exterior
+        };
+
+        // Find all category headers and their corresponding total values
+        console.log('[Portfolio Totals] Starting collection with category mappings:', categoryMappings);
+        
+        Object.keys(categoryMappings).forEach(categoryCode => {
+          try {
+            // Find headers with the category class
+            const selector = `h3.text-category-${categoryCode}`;
+            const headers = document.querySelectorAll(selector);
+            console.log(`[Portfolio Totals] Found ${headers.length} headers for selector: ${selector}`);
+            
+            headers.forEach((header, index) => {
+              console.log(`[Portfolio Totals] Processing header ${index + 1} for category ${categoryCode}`);
+              try {
+                // Find the parent collapsible header
+                const collapsibleHeader = header.closest('header.collapsible-header');
+                if (!collapsibleHeader) {
+                  console.warn(`[Portfolio Totals] No collapsible header found for category ${categoryCode}`);
+                  return;
+                }
+                
+                // Find the percentage line section which contains the total value
+                // Try different selectors for the line containing the value
+                let percentageLine = collapsibleHeader.querySelector('.line');
+                if (!percentageLine) {
+                  // Try alternative selectors
+                  percentageLine = collapsibleHeader.querySelector('.d-flex.align-items-center');
+                  if (!percentageLine) {
+                    percentageLine = collapsibleHeader.querySelector('div[class*="line"]');
+                    if (!percentageLine) {
+                      // Try to find any element containing the value pattern
+                      percentageLine = collapsibleHeader;
+                    }
+                  }
+                }
+                
+                if (!percentageLine) {
+                  console.warn(`[Portfolio Totals] No percentage line found for category ${categoryCode}`);
+                  console.log(`[Portfolio Totals] Available elements in header:`, collapsibleHeader.innerHTML.substring(0, 200) + '...');
+                  return;
+                }
+                
+                // Find the total value in the format: R$<span class="sensitive-field fw-600">12.161,25</span>
+                // Try different selectors for the value container
+                let valueContainer = percentageLine.querySelector('small.fs-3.lh-3.fw-100');
+                if (!valueContainer) {
+                  // Try alternative selectors
+                  valueContainer = percentageLine.querySelector('small');
+                  if (!valueContainer) {
+                    valueContainer = percentageLine.querySelector('.fs-3');
+                    if (!valueContainer) {
+                      valueContainer = percentageLine.querySelector('[class*="fs-"]');
+                      if (!valueContainer) {
+                        // Last resort: search in the entire line
+                        valueContainer = percentageLine;
+                      }
+                    }
+                  }
+                }
+                
+                if (!valueContainer) {
+                  console.warn(`[Portfolio Totals] No value container found for category ${categoryCode}`);
+                  console.log(`[Portfolio Totals] Available elements in percentage line:`, percentageLine.innerHTML.substring(0, 200) + '...');
+                  return;
+                }
+                
+                // Find the span with the actual value
+                let valueSpan = valueContainer.querySelector('span.sensitive-field.fw-600');
+                if (!valueSpan) {
+                  // Try alternative selectors
+                  valueSpan = valueContainer.querySelector('span.sensitive-field');
+                  if (!valueSpan) {
+                    valueSpan = valueContainer.querySelector('span.fw-600');
+                    if (!valueSpan) {
+                      valueSpan = valueContainer.querySelector('span[class*="sensitive"]');
+                      if (!valueSpan) {
+                        // Try any span with numeric content that looks like currency
+                        const allSpans = valueContainer.querySelectorAll('span');
+                        for (const span of allSpans) {
+                          const text = span.textContent?.trim();
+                          if (text && /\d+[.,]\d+/.test(text) && !text.toLowerCase().includes('ativo')) {
+                            valueSpan = span;
+                            console.log(`[Portfolio Totals] Found numeric span: "${text}"`);
+                            break;
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+                
+                if (!valueSpan) {
+                  console.warn(`[Portfolio Totals] No value span found for category ${categoryCode}`);
+                  console.log(`[Portfolio Totals] Available spans in value container:`, 
+                    Array.from(valueContainer.querySelectorAll('span')).map(s => s.className + ': ' + s.textContent).join(', '));
+                  return;
+                }
+                
+                const valueText = valueSpan.textContent?.trim();
+                console.log(`[Portfolio Totals] Category ${categoryCode}: Raw value text = "${valueText}"`);
+                
+                if (valueText) {
+                  const value = parseBRLValue('R$ ' + valueText); // Add R$ prefix for parsing
+                  console.log(`[Portfolio Totals] Category ${categoryCode}: Parsed value = ${value} (from "${valueText}")`);
+                  
+                  const consolidatedCategory = categoryMappings[categoryCode];
+                  
+                  if (isNaN(value)) {
+                    console.error(`[Portfolio Totals] NaN detected for category ${categoryCode}! Raw text: "${valueText}", Attempted parse: ${value}`);
+                    console.log(`[Portfolio Totals] Full element HTML:`, valueSpan.outerHTML);
+                  } else {
+                    totals[consolidatedCategory] += value;
+                    console.log(`[Portfolio Totals] ✓ Category ${categoryCode} (${consolidatedCategory}): R$ ${valueText} -> ${value}`);
+                  }
+                } else {
+                  console.warn(`[Portfolio Totals] No value text found for category ${categoryCode}`);
+                  console.log(`[Portfolio Totals] Value span content:`, valueSpan);
+                }
+              } catch (error) {
+                console.warn(`[Portfolio Totals] Error processing category ${categoryCode} header:`, error);
+              }
+            });
+          } catch (error) {
+            console.warn(`[Portfolio Totals] Error processing category ${categoryCode}:`, error);
+          }
+        });
+
+        console.log('[Portfolio Totals] Final totals:', totals);
+        return totals;
+      } catch (error) {
+        console.error('[Portfolio Totals] Error collecting portfolio totals:', error);
+        return totals;
+      }
+    }
+
+    // Save portfolio totals to cache
+    function savePortfolioTotalsToCache(totals) {
+      try {
+        chrome.storage.local.set({ portfolio_totals_by_class: totals }, () => {
+          if (chrome.runtime.lastError) {
+            console.error('[Portfolio Totals] Error saving to cache:', chrome.runtime.lastError.message);
+          } else {
+            console.log('[Portfolio Totals] Totals saved to cache:', totals);
+          }
+        });
+      } catch (error) {
+        console.error('[Portfolio Totals] Error saving totals to cache:', error);
+      }
+    }
+
+    // Get portfolio totals from cache
+    function getPortfolioTotalsFromCache(callback) {
+      try {
+        chrome.storage.local.get(['portfolio_totals_by_class'], (result) => {
+          if (chrome.runtime.lastError) {
+            console.error('[Portfolio Totals] Error reading from cache:', chrome.runtime.lastError.message);
+            callback(null);
+          } else {
+            const totals = result.portfolio_totals_by_class || {
+              acoes: 0,
+              fiis: 0,
+              etfs: 0,
+              exterior: 0
+            };
+            console.log('[Portfolio Totals] Totals retrieved from cache:', totals);
+            callback(totals);
+          }
+        });
+      } catch (error) {
+        console.error('[Portfolio Totals] Error getting totals from cache:', error);
+        callback(null);
+      }
+    }
+
+    // Portfolio allocation management (simplified)
+    function getAllocationData() {
+      return new Promise((resolve) => {
+        chrome.storage.local.get(['allocation_data'], (result) => {
+          const defaultData = {
+            'Ações': { target: 50 },
+            'FIIs': { target: 20 },
+            'ETFs': { target: 15 },
+            'EUA': { target: 15 }
+          };
+          resolve(result.allocation_data || defaultData);
+        });
+      });
+    }
+
+    function saveAllocationData(data) {
+      chrome.storage.local.set({ allocation_data: data }, () => {
+        console.log('[Allocation] Saved allocation data:', data);
+      });
+    }
+
+    function addNewAllocationRow() {
+      const className = prompt('Nome da nova classe (ex: Renda Fixa):');
+      if (!className || className.trim() === '') return;
+
+      const value = parseFloat(prompt('Valor atual em R$ (deixe 0 se não tiver):') || '0');
+      const target = parseFloat(prompt('Porcentagem alvo (%):') || '10');
+
+      getAllocationData().then(data => {
+        if (data[className.trim()]) {
+          alert('Já existe uma classe com este nome.');
+          return;
+        }
+
+        data[className.trim()] = { 
+          value: value,
+          target: target,
+          isCustom: true
+        };
+        
+        saveAllocationData(data);
+        setTimeout(() => updatePortfolioDistribution(), 200);
+      });
+    }
+
+    // Update target value with real-time total update
+    window.updateTargetValue = async (className, newValue) => {
+      const value = parseFloat(newValue) || 0;
+      const allocationData = await getAllocationData();
+      
+      if (!allocationData[className]) {
+        allocationData[className] = { target: value };
+      } else {
+        allocationData[className].target = value;
+      }
+      
+      await saveAllocationData(allocationData);
+      console.log(`Target updated for ${className}: ${value}%`);
+      
+      // Update total target percentage in real time
+      updateTotalTargetPercentage();
+    };
+
+    // Read holdings from page for portfolio calculations
+    function readHoldingsFromPage(rootEl) {
+      try {
+        const scope = rootEl && typeof rootEl.querySelectorAll === 'function' ? rootEl : document;
+        const map = Object.create(null);
+        
+        console.log('[readHoldingsFromPage] Starting to read holdings from scope:', scope === document ? 'document' : 'rootEl');
+        
+        const rows = scope.querySelectorAll('tbody.list tr.item');
+        console.log(`[readHoldingsFromPage] Found ${rows.length} holding rows`);
+        
+        rows.forEach((r, index) => {
+          try {
+            const codeTd = r.querySelector('td[data-key="code"]');
+            const code = (codeTd?.getAttribute('title') || codeTd?.textContent || '').trim().toUpperCase();
+            if (!code) {
+              console.warn(`[readHoldingsFromPage] Row ${index}: No code found`);
+              return;
+            }
+            
+            const p = r.querySelector('td[data-key="price"]');
+            const q = r.querySelector('td[data-key="quantity"]');
+            const avg = r.querySelector('td[data-key="unitValue"]');
+            
+            let price = Number(p?.getAttribute('title'));
+            if (!Number.isFinite(price)) price = parseMoneyBR(p?.textContent);
+            
+            const qty = Number(q?.getAttribute('title')) || parseIntBR(q?.textContent);
+            
+            let avgPrice = Number(avg?.getAttribute('title'));
+            if (!Number.isFinite(avgPrice)) avgPrice = parseMoneyBR(avg?.textContent);
+            
+            map[code] = { 
+              price: Number.isFinite(price) ? price : NaN, 
+              qty: Number.isFinite(qty) ? qty : 0, 
+              avgPrice: Number.isFinite(avgPrice) ? avgPrice : NaN 
+            };
+            
+            console.log(`[readHoldingsFromPage] Row ${index}: ${code} - Price: ${price}, Qty: ${qty}`);
+          } catch (rowError) {
+            console.error(`[readHoldingsFromPage] Error processing row ${index}:`, rowError);
+          }
+        });
+        
+        const holdingCodes = Object.keys(map);
+        console.log(`[readHoldingsFromPage] Successfully processed ${holdingCodes.length} holdings:`, holdingCodes);
+        
+        return map;
+      } catch (error) {
+        console.error('[readHoldingsFromPage] Critical error:', error);
+        return Object.create(null);
+      }
+    }
+
+    // Update portfolio distribution
+    // Update portfolio distribution
+    async function updatePortfolioDistribution() {
+      const functionName = 'updatePortfolioDistribution';
+      console.log(`[${functionName}] Starting portfolio distribution update`);
+      
+      try {
+        $('#distributionContent').innerHTML = '<div class="loading">Carregando...</div>';
+
+        // Step 1: Collect portfolio totals by asset class
+        try {
+          const portfolioTotals = collectPortfolioTotals();
+          savePortfolioTotalsToCache(portfolioTotals);
+        } catch (totalsError) {
+          console.error(`[${functionName}] Error collecting portfolio totals:`, totalsError);
+        }
+
+        // Step 2: Get holdings from page for ticker classification
+        const holdings = readHoldingsFromPage(document);
+        if (!holdings || Object.keys(holdings).length === 0) {
+          $('#distributionContent').innerHTML = '<div class="loading">Nenhum ativo encontrado. Certifique-se de que a página da carteira carregou completamente.</div>';
+          return;
+        }
+
+        // Step 3: Get allocation data and portfolio totals
+        const [baseAllocationData, cachedTotals] = await Promise.all([
+          getAllocationData(),
+          new Promise(resolve => getPortfolioTotalsFromCache(resolve))
+        ]);
+        
+        // Use temporary data if in edit mode, otherwise use saved data
+        const allocationData = isEditMode && tempAllocationData ? tempAllocationData : baseAllocationData;
+        if (!tempAllocationData && isEditMode) {
+          tempAllocationData = JSON.parse(JSON.stringify(baseAllocationData)); // Deep copy
+        }
+
+        if (!cachedTotals) {
+          $('#distributionContent').innerHTML = '<div class="loading" style="color:#dc2626;">Erro ao carregar totais. Tente novamente.</div>';
+          return;
+        }
+
+        // Step 4: Build distribution data
+        const distribution = {
+          'Ações': { value: cachedTotals.acoes, count: 0, tickers: [] },
+          'FIIs': { value: cachedTotals.fiis, count: 0, tickers: [] },
+          'ETFs': { value: cachedTotals.etfs, count: 0, tickers: [] },
+          'EUA': { value: cachedTotals.exterior, count: 0, tickers: [] }
+        };
+
+        // Count tickers per class
+        Object.entries(holdings).forEach(([ticker, data]) => {
+          if (data && typeof data.qty === 'number' && data.qty > 0) {
+            const assetClass = classifyAsset(ticker);
+            distribution[assetClass].tickers.push(ticker);
+            distribution[assetClass].count++;
+          }
+        });
+
+        // Add custom classes
+        console.log('Adding custom classes from allocationData:', allocationData);
+        console.log('Is in edit mode:', isEditMode);
+        console.log('Temp allocation data:', tempAllocationData);
+        Object.entries(allocationData).forEach(([className, data]) => {
+          if (data.isCustom && !distribution[className]) {
+            console.log(`Adding custom class: ${className}`, data);
+            distribution[className] = {
+              value: data.value || 0,
+              count: 0,
+              tickers: [],
+              isCustom: true
+            };
+          }
+        });
+
+        console.log('Final distribution object:', distribution);
+
+        // Calculate total value
+        let totalValue = 0;
+        Object.values(distribution).forEach(data => {
+          totalValue += data.value;
+        });
+
+        // Step 5: Create editable table
+        let portfolioHTML = `
+          <table class="allocation-table">
+            <thead>
+              <tr>
+                <th>Classe</th>
+                <th style="text-align:right;">Valor</th>
+                <th style="text-align:right;">% Atual</th>
+                <th style="text-align:right;">% Meta</th>
+                <th style="text-align:right;">Diferença</th>
+                ${isEditMode ? '<th style="text-align:center;">Ações</th>' : ''}
+              </tr>
+            </thead>
+            <tbody>
+        `;
+
+        Object.entries(distribution).forEach(([className, data]) => {
+          console.log(`Rendering class: ${className}`, data);
+          
+          const percentage = totalValue > 0 ? (data.value / totalValue * 100) : 0;
+          const targetPercentage = allocationData[className]?.target || 0;
+          const difference = percentage - targetPercentage;
+          
+          console.log(`${className}: value=${data.value}, percentage=${percentage.toFixed(1)}%, target=${targetPercentage}%`);
+          
+          const diffColor = Math.abs(difference) <= 1 ? '#6b7280' : 
+                           difference > 0 ? '#dc2626' : '#03ab95';
+          const diffIcon = Math.abs(difference) <= 1 ? '✓' :
+                           difference > 0 ? '↑' : '↓';
+
+          const isCustom = data.isCustom;
+          const valueCell = isCustom 
+            ? (isEditMode ? `<input type="number" class="editable-input custom-value-input" value="${data.value.toFixed(2)}" data-class="${className}" style="width:80px;">` : formatCurrency(data.value))
+            : formatCurrency(data.value);
+
+          portfolioHTML += `
+            <tr ${isCustom ? 'style="background:#f8fafc;"' : ''}>
+              <td><strong>${className}</strong> ${isCustom ? '<small style="color:#6b7280;">(Custom)</small>' : ''}</td>
+              <td class="number">${valueCell}</td>
+              <td class="number">${percentage.toFixed(1)}%</td>
+              <td class="editable-cell">
+                ${isEditMode ? 
+                  `<input type="number" class="editable-input target-input" value="${targetPercentage.toFixed(1)}" 
+                         data-class="${className}" min="0" max="100" step="0.1" style="width:60px;">` :
+                  `<span>${targetPercentage.toFixed(1)}%</span>`
+                }
+              </td>
+              <td class="number" style="color:${diffColor};">${diffIcon} ${Math.abs(difference).toFixed(1)}%</td>
+              ${isEditMode ? `<td style="text-align:center;">
+                ${isCustom ? `<button class="remove-row-btn" data-class="${className}">🗑️</button>` : '-'}
+              </td>` : ''}
+            </tr>
+          `;
+        });
+
+        // Total row
+        let totalTargetPercentage = 0;
+        Object.entries(allocationData).forEach(([className, data]) => {
+          totalTargetPercentage += (data.target || 0);
+        });
+        
+        portfolioHTML += `
+          <tr id="total-row" style="border-top:2px solid #e5e7eb; background:#f3f4f6; font-weight:600;">
+            <td><strong>TOTAL</strong></td>
+            <td class="number">${formatCurrency(totalValue)}</td>
+            <td class="number">100.0%</td>
+            <td id="total-target" class="number">${totalTargetPercentage.toFixed(1)}%</td>
+            <td id="total-diff" class="number" style="color:${Math.abs(100 - totalTargetPercentage) <= 1 ? '#6b7280' : '#dc2626'};">
+              ${Math.abs(100 - totalTargetPercentage) <= 1 ? '✓' : '⚠️'} ${Math.abs(100 - totalTargetPercentage).toFixed(1)}%
+            </td>
+            ${isEditMode ? '<td>-</td>' : ''}
+          </tr>
+        `;
+
+        portfolioHTML += '</tbody></table>';
+        $('#distributionContent').innerHTML = portfolioHTML;
+
+        // Add event listeners for real-time updates if in edit mode
+        if (isEditMode) {
+          const targetInputs = $('#distributionContent').querySelectorAll('.target-input');
+          targetInputs.forEach(input => {
+            input.addEventListener('input', (e) => {
+              const className = e.target.getAttribute('data-class');
+              const newValue = e.target.value;
+              updateTargetInRealTime(className, newValue);
+            });
+          });
+
+          const customValueInputs = $('#distributionContent').querySelectorAll('.custom-value-input');
+          customValueInputs.forEach(input => {
+            input.addEventListener('input', (e) => {
+              const className = e.target.getAttribute('data-class');
+              const newValue = e.target.value;
+              updateCustomValueInRealTime(className, newValue);
+            });
+          });
+
+          const removeButtons = $('#distributionContent').querySelectorAll('.remove-row-btn');
+          removeButtons.forEach(button => {
+            button.addEventListener('click', (e) => {
+              const className = e.target.getAttribute('data-class');
+              removeAllocationRow(className);
+            });
+          });
+        }
+
+        // Update summary
+        $('#totalValue').textContent = formatCurrency(totalValue);
+        $('#assetsCount').textContent = Object.keys(holdings).length.toString();
+        $('#lastUpdate').textContent = new Date().toLocaleTimeString('pt-BR', { 
+          hour: '2-digit', 
+          minute: '2-digit' 
+        });
+
+        console.log(`[${functionName}] Portfolio distribution updated successfully`);
+
+      } catch (error) {
+        console.error(`[${functionName}] Critical error:`, error);
+        $('#distributionContent').innerHTML = '<div class="loading" style="color:#dc2626;">Erro ao carregar. Tente recarregar a página.</div>';
+      }
+    }
+
+    // Event listeners
+    $('#refreshPortfolio').addEventListener('click', updatePortfolioDistribution);
+    $('#addNewRow').addEventListener('click', addNewAllocationRow);
+    $('#editTableBtn').addEventListener('click', toggleEditMode);
+    $('#saveTableBtn').addEventListener('click', saveTableChanges);
+
+    // Add new allocation row (modified for edit mode)
+    window.addNewAllocationRow = async () => {
+      if (!isEditMode) {
+        alert('Entre no modo de edição primeiro.');
+        return;
+      }
+      
+      const className = prompt('Digite o nome da nova classe de ativo:');
+      if (!className || !className.trim()) return;
+      
+      const value = parseFloat(prompt(`Digite o valor atual para ${className.trim()}:`, '0') || '0');
+      const target = parseFloat(prompt(`Digite a porcentagem meta para ${className.trim()}:`, '0') || '0');
+      
+      try {
+        if (!tempAllocationData) {
+          tempAllocationData = await getAllocationData();
+        }
+        
+        if (tempAllocationData[className.trim()]) {
+          alert('Já existe uma classe com este nome.');
+          return;
+        }
+        
+        // Add to temporary data first
+        tempAllocationData[className.trim()] = {
+          value: value,
+          target: target,
+          isCustom: true
+        };
+        
+        // Save permanently to storage AND update temp data
+        await saveAllocationData(tempAllocationData);
+        
+        // Force immediate regeneration with updated data
+        console.log('Forcing table regeneration after adding class:', className.trim());
+        console.log('Current tempAllocationData:', tempAllocationData);
+        
+        // Small delay to ensure storage is updated, then regenerate
+        setTimeout(() => {
+          updatePortfolioDistribution();
+        }, 50);
+        
+        console.log(`Nova classe adicionada e exibida imediatamente: ${className.trim()}`);
+      } catch (error) {
+        console.error('Error adding new class:', error);
+        alert('Erro ao adicionar nova classe.');
+      }
+    };
+
+    // Fix incorrect Ações percentage (temporary function)
+    async function fixIncorrectTargets() {
+      const allocationData = await getAllocationData();
+      
+      // Fix Ações from 50% to 40%
+      if (allocationData['Ações'] && allocationData['Ações'].target === 50) {
+        allocationData['Ações'].target = 40;
+        await saveAllocationData(allocationData);
+        console.log('Fixed Ações target from 50% to 40%');
+      }
+    }
+
+    // Call fix function when initializing
+    fixIncorrectTargets();
+
+    // Toggle edit mode
+    function toggleEditMode() {
+      isEditMode = true;
+      tempAllocationData = null; // Will be initialized in updatePortfolioDistribution
+      
+      // Update button visibility
+      $('#editTableBtn').style.display = 'none';
+      $('#saveTableBtn').style.display = 'inline-block';
+      $('#addNewRow').style.display = 'inline-block';
+      
+      // Regenerate table in edit mode
+      updatePortfolioDistribution();
+    }
+
+    // Save table changes
+    async function saveTableChanges() {
+      try {
+        // Get fresh data from storage to preserve any add/delete operations that were already saved
+        const freshStorageData = await getAllocationData();
+        console.log('Fresh storage data (includes add/delete):', freshStorageData);
+        
+        // Update only the target percentages from the form inputs
+        const targetInputs = document.querySelectorAll('.target-input');
+        console.log('Found target inputs:', targetInputs.length);
+        
+        targetInputs.forEach(input => {
+          const className = input.getAttribute('data-class');
+          const value = parseFloat(input.value) || 0;
+          console.log(`Updating target for ${className}: ${input.value} -> ${value}`);
+          
+          // Update in fresh storage data (which includes any add/delete operations)
+          if (freshStorageData[className]) {
+            freshStorageData[className].target = value;
+          }
+        });
+        
+        // Update custom values from form inputs
+        const customValueInputs = document.querySelectorAll('.custom-value-input');
+        console.log('Found custom value inputs:', customValueInputs.length);
+        
+        customValueInputs.forEach(input => {
+          const className = input.getAttribute('data-class');
+          const value = parseFloat(input.value) || 0;
+          console.log(`Updating custom value for ${className}: ${input.value} -> ${value}`);
+          
+          if (freshStorageData[className]) {
+            freshStorageData[className].value = value;
+          }
+        });
+        
+        console.log('Final data before saving (preserves add/delete operations):', freshStorageData);
+        
+        // Save the combined data to permanent storage
+        await saveAllocationData(freshStorageData);
+        
+        // Exit edit mode
+        isEditMode = false;
+        tempAllocationData = null;
+        
+        // Update button visibility
+        $('#editTableBtn').style.display = 'inline-block';
+        $('#saveTableBtn').style.display = 'none';
+        $('#addNewRow').style.display = 'none';
+        
+        // Regenerate table in view mode
+        updatePortfolioDistribution();
+        
+        console.log('Table changes saved successfully');
+        
+      } catch (error) {
+        console.error('Error saving table changes:', error);
+        alert('Erro ao salvar alterações. Tente novamente.');
+      }
+    }
+
+    // Update custom value
+    window.updateCustomValue = async (className, newValue) => {
+      const value = parseFloat(newValue) || 0;
+      const allocationData = await getAllocationData();
+      
+      if (allocationData[className] && allocationData[className].isCustom) {
+        allocationData[className].value = value;
+        await saveAllocationData(allocationData);
+        console.log(`Custom value updated for ${className}: ${formatCurrency(value)}`);
+        updatePortfolioDistribution();
+      }
+    };
+
+    // Add new custom class
+    async function addNewCustomClass(className, value, target) {
+      try {
+        const allocationData = await getAllocationData();
+        allocationData[className] = {
+          value: value,
+          target: target,
+          isCustom: true
+        };
+        
+        await saveAllocationData(allocationData);
+        updatePortfolioDistribution();
+        console.log(`Custom class added: ${className} - ${formatCurrency(value)} (${target}%)`);
+      } catch (error) {
+        console.error('Error adding custom class:', error);
+      }
+    }
+
+    // Initial load
+    setTimeout(updatePortfolioDistribution, 1000);
+  }
+
   // Floating Shadow DOM panel: Rebalance dates manager
   // Idempotent and robust to SPA rerenders
   function initRebalancePanel() {
@@ -725,9 +1670,16 @@
   
     const host = document.createElement('div');
     host.id = HOST_ID;
-    const anchor = document.getElementById('cashposition-result');
-    if (anchor && anchor.parentElement) anchor.insertAdjacentElement('afterend', host);
-    else document.body.appendChild(host);
+    
+    // Try to insert after portfolio distribution panel, fallback to original position
+    const portfolioHost = document.getElementById('portfolio-distribution-host');
+    if (portfolioHost && portfolioHost.parentElement) {
+      portfolioHost.insertAdjacentElement('afterend', host);
+    } else {
+      const anchor = document.getElementById('cashposition-result');
+      if (anchor && anchor.parentElement) anchor.insertAdjacentElement('afterend', host);
+      else document.body.appendChild(host);
+    }
   
     const root = host.attachShadow({ mode: 'open' });
     const wrap = document.createElement('div');
@@ -1614,26 +2566,6 @@
       return sum;
     }
   
-    function readHoldingsFromPage(rootEl) {
-      const scope = rootEl && typeof rootEl.querySelectorAll === 'function' ? rootEl : document;
-      const map = Object.create(null);
-      scope.querySelectorAll('tbody.list tr.item').forEach((r) => {
-        const codeTd = r.querySelector('td[data-key="code"]');
-        const code = (codeTd?.getAttribute('title') || codeTd?.textContent || '').trim().toUpperCase();
-        if (!code) return;
-        const p = r.querySelector('td[data-key="price"]');
-        const q = r.querySelector('td[data-key="quantity"]');
-        const avg = r.querySelector('td[data-key="unitValue"]');
-        let price = Number(p?.getAttribute('title'));
-        if (!Number.isFinite(price)) price = parseMoneyBR(p?.textContent);
-        const qty = Number(q?.getAttribute('title')) || parseIntBR(q?.textContent);
-        let avgPrice = Number(avg?.getAttribute('title'));
-        if (!Number.isFinite(avgPrice)) avgPrice = parseMoneyBR(avg?.textContent);
-        map[code] = { price: Number.isFinite(price) ? price : NaN, qty: Number.isFinite(qty) ? qty : 0, avgPrice: Number.isFinite(avgPrice) ? avgPrice : NaN };
-      });
-      return map;
-    }
-  
     function fetchTopNFromAPI(cb) {
       const source = ewSource.value || 'fm';
       chrome.runtime.sendMessage({ type: 'GET_TOPN_CHECKLIST', source }, (resp) => {
@@ -2086,6 +3018,27 @@
       // Aguarda a página atualizar a lista de ativos
       setTimeout(() => {
         try {
+          // Collect portfolio totals by asset class first
+          console.log('[Portfolio Totals] Starting collection...');
+          const portfolioTotals = collectPortfolioTotals();
+          
+          // Save totals to cache
+          savePortfolioTotalsToCache(portfolioTotals);
+
+          // Log example of how to access the consolidated totals
+          setTimeout(() => {
+            getPortfolioTotalsFromCache((cachedTotals) => {
+              if (cachedTotals) {
+                console.log('[Portfolio Totals] Example usage - Cached totals:');
+                console.log(`- Ações: ${formatCurrency(cachedTotals.acoes)}`);
+                console.log(`- FIIs: ${formatCurrency(cachedTotals.fiis)}`);
+                console.log(`- ETFs: ${formatCurrency(cachedTotals.etfs)}`);
+                console.log(`- Exterior: ${formatCurrency(cachedTotals.exterior)}`);
+                console.log(`- Total Geral: ${formatCurrency(cachedTotals.acoes + cachedTotals.fiis + cachedTotals.etfs + cachedTotals.exterior)}`);
+              }
+            });
+          }, 500);
+
           // Find the "AÇÕES" group to use as a context for reading holdings
           let acoesGroup = null;
           const groups = document.querySelectorAll('li.group');
@@ -2189,6 +3142,7 @@
         enhanceOnce();
         setupObserver();
       });
+      try { initPortfolioDistributionPanel(); } catch {}
       try { initRebalancePanel(); } catch {}
       try { initEqualWeightPlanPanel(); } catch {}
     } else if (tries >= MAX_TRIES) {
@@ -2197,6 +3151,7 @@
         enhanceOnce();
         setupObserver();
       });
+      try { initPortfolioDistributionPanel(); } catch {}
       try { initRebalancePanel(); } catch {}
       try { initEqualWeightPlanPanel(); } catch {}
     }

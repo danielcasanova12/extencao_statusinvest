@@ -147,7 +147,8 @@ function mapColumns(headersRaw) {
     margem_ebit: pick('margem_EBIT','margem ebit','margem_ebit','ebit_margin'),
     roic: pick('ROIC','roic','roic_pct','roic%'),
     i10_score: pick('i10_score','checklist_score','i10'),
-    setor: pick('setor','sector','segmento','subsetor')
+    setor: pick('setor','sector','segmento','subsetor'),
+    preco: pick('cotacao','cotação','preço','preco','price','close','ultimo','last','valor')
   };
 }
 
@@ -187,6 +188,7 @@ function normalizeAndCompute(parsed, env) {
     const liquidez = parseNumberBR(raw[cols.liquidez]);
     const margemEBIT = parseNumberBR(raw[cols.margem_ebit]);
     const i10 = parseNumberBR(raw[cols.i10_score]);
+    const preco = parseNumberBR(raw[cols.preco]);
     const empresa = raw[cols.empresa] || tickerBase(r.ticker);
     const setor = raw[cols.setor] || '';
 
@@ -202,6 +204,7 @@ function normalizeAndCompute(parsed, env) {
       ebit: EBIT,
       ev: EV,
       ey: EY,
+      preco: preco,
       csv_data: raw,
     });
   }
@@ -265,20 +268,22 @@ async function ensureTable(db) {
     '  rank_roic        int,',
     '  mf_rank          int,',
     '  mf_rank_final    int,',
+    '  preco            numeric,',
     '  generated_at     timestamptz default now(),',
     '  csv_data         jsonb',
     ');'
   ].join('\n');
   await db.query(sql);
-  // Garantir coluna csv_data mesmo se a tabela já existia
+  // Garantir colunas mesmo se a tabela já existia
   try { await db.query('ALTER TABLE tb_formulamagica ADD COLUMN IF NOT EXISTS csv_data jsonb'); } catch {}
+  try { await db.query('ALTER TABLE tb_formulamagica ADD COLUMN IF NOT EXISTS preco numeric'); } catch {}
 }
 
 async function saveResults(db, rows) {
   await ensureTable(db);
   await db.query('TRUNCATE TABLE tb_formulamagica');
   if (!rows.length) return 0;
-  const cols = ['ticker','empresa','setor','market_cap','liquidez','margem_ebit','roic','i10_score','ebit','ev','ey','rank_ey','rank_roic','mf_rank','mf_rank_final','csv_data'];
+  const cols = ['ticker','empresa','setor','market_cap','liquidez','margem_ebit','roic','i10_score','ebit','ev','ey','rank_ey','rank_roic','mf_rank','mf_rank_final','preco','csv_data'];
   const casts = cols.map((c) => (c === 'csv_data' ? '::jsonb' : ''));
   const values = [];
   const params = [];

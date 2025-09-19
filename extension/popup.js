@@ -90,6 +90,26 @@
     }
   }
 
+  function triggerFmSimpleInv10() {
+    setStatus('Calculando ranking Fórmula Mágica + Investidor 10 Simples...');
+    try {
+      chrome.runtime.sendMessage({ type: 'FM_SIMPLE_INV10' }, (resp) => {
+        console.log('[triggerFmSimpleInv10] Response:', resp);
+        if (resp && resp.ok) {
+          const processed = Number(resp.json?.processed || 0);
+          setStatus(`Ranking FM + Inv10 Simples concluído! Processados: ${processed} registros`);
+        } else {
+          const errorDetail = resp?.error || 'falha desconhecida';
+          console.error('[triggerFmSimpleInv10] Error:', errorDetail);
+          setStatus(`Erro ao calcular FM + Inv10 Simples: ${errorDetail}`);
+        }
+      });
+    } catch (err) {
+      console.error('[triggerFmSimpleInv10] Exception:', err);
+      setStatus(`Erro interno: ${String(err)}`);
+    }
+  }
+
   function stopJobPolling() {
     if (jobPollIv) { try { clearInterval(jobPollIv); } catch {} jobPollIv = null; }
   }
@@ -417,6 +437,11 @@
 
       if (tipo === 'inv10fm') {
         triggerFmFromInv10(4);
+        return;
+      }
+
+      if (tipo === 'simpleinv10') {
+        triggerFmSimpleInv10();
         return;
       }
 
