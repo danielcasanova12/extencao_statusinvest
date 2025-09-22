@@ -2,6 +2,368 @@
 // - Injeta painel na página de patrimônio
 // - Pede ao bg.js os dados da API e renderiza uma tabela
 
+// Global utility functions
+function formatCurrency(value) {
+  return new Intl.NumberFormat('pt-BR', {
+    style: 'currency',
+    currency: 'BRL'
+  }).format(value || 0);
+}
+
+function parseBRLValue(text) {
+  if (!text || typeof text !== 'string') return 0;
+  
+  try {
+    // Remove "R$" and spaces, then replace thousand separators and decimal separator
+    let cleanValue = text.replace(/R\$\s*/g, '').trim();
+    
+    // Early detection of non-numeric content - return 0 for words like "ativos", "item", etc
+    if (cleanValue.includes('ativos') || cleanValue.includes('ativo') || 
+        cleanValue.includes('item') || cleanValue.includes('items') ||
+        /^[a-zA-Z\s]+$/.test(cleanValue)) {
+      // Only warn if it's not a common non-numeric word to reduce console spam
+      if (!['ativos', 'ativo', 'item', 'items'].includes(cleanValue.toLowerCase())) {
+        console.warn(`[parseBRLValue] Non-numeric content detected: "${text}" -> "${cleanValue}" -> returning 0`);
+      }
+      return 0;
+    }
+    
+    // Handle negative values
+    const isNegative = cleanValue.startsWith('-');
+    if (isNegative) cleanValue = cleanValue.substring(1);
+    
+    // Replace thousand separators (.) and decimal separator (,)
+    cleanValue = cleanValue.replace(/\./g, '').replace(',', '.');
+    
+    // Check if the clean value contains only valid numeric characters
+    if (!/^\d+(\.\d+)?$/.test(cleanValue)) {
+      console.warn(`[parseBRLValue] Invalid numeric format: "${text}" -> "${cleanValue}"`);
+      return 0;
+    }
+    
+    const number = parseFloat(cleanValue);
+    console.log(`[parseBRLValue] Input: "${text}" -> Clean: "${cleanValue}" -> Number: ${number}`);
+    
+    if (isNaN(number)) {
+      console.error(`[parseBRLValue] Failed to parse: "${text}" -> "${cleanValue}" -> NaN`);
+      return 0;
+    }
+    
+    return isNegative ? -number : number;
+  } catch (error) {
+    console.error(`[parseBRLValue] Error parsing: "${text}"`, error);
+    return 0;
+  }
+}
+
+function classifyAsset(ticker) {
+  if (!ticker) return 'Ações';
+  
+  ticker = ticker.toUpperCase();
+  
+  // FIIs (Real Estate Investment Funds)
+  if (ticker.endsWith('11')) return 'FIIs';
+  
+  // ETFs
+  if (ticker.match(/^[A-Z]{4}11$/) && ['IVVB', 'BOVA', 'SMAL', 'PIBB'].some(etf => ticker.startsWith(etf))) return 'ETFs';
+  
+  // US stocks (common patterns)
+  if (ticker.length <= 5 && !ticker.match(/^\d/) && !ticker.endsWith('11')) return 'EUA';
+  
+  // Default to Brazilian stocks
+  return 'Ações';
+}
+
+function collectPortfolioTotals() {
+  const categoryMappings = {
+    1: 'acoes',      // Ações
+    2: 'fiis',       // FIIs
+    6: 'etfs',       // ETFs
+    22: 'fiis',      // More FIIs (different category)
+    24: 'fiis',      // More FIIs (another category)
+    901: 'exterior'  // International assets
+  };
+
+  const totals = {
+    acoes: 0,
+    fiis: 0,
+    etfs: 0,
+    exterior: 0
+  };
+
+  // Find all category headers and their corresponding total values
+  console.log('[Portfolio Totals] Starting collection with category mappings:', categoryMappings);
+  
+  Object.keys(categoryMappings).forEach(categoryCode => {
+    try {
+      // Find headers with the category class
+      const selector = `h3.text-category-${categoryCode}`;
+      const headers = document.querySelectorAll(selector);
+      console.log(`[Portfolio Totals] Found ${headers.length} headers for selector: ${selector}`);
+      
+      headers.forEach((header, index) => {
+        console.log(`[Portfolio Totals] Processing header ${index + 1} for category ${categoryCode}`);
+        try {
+          // Find the parent collapsible header
+          const collapsibleHeader = header.closest('header.collapsible-header');
+          if (!collapsibleHeader) {
+            console.warn(`[Portfolio Totals] No collapsible header found for category ${categoryCode}`);
+            return;
+          }
+
+          // Find the collapsible body (where the value is displayed)
+          const collapsibleBody = collapsibleHeader.nextElementSibling;
+          if (!collapsibleBody || !collapsibleBody.classList.contains('collapsible-body')) {
+            console.warn(`[Portfolio Totals] No collapsible body found for category ${categoryCode}`);
+            return;
+          }
+
+          // Look for percentage line in the collapsible body
+          const percentageLine = collapsibleBody.querySelector('div.d-flex.justify-content-between, .d-flex.justify-content-between');
+          if (!percentageLine) {
+            console.warn(`[Portfolio Totals] No percentage line found for category ${categoryCode}`);
+            return;
+          }
+
+          // Find value container - try multiple selectors
+          let valueContainer = null;
+          const possibleSelectors = [
+            '.d-flex.flex-column.align-items-end',
+            '.text-right',
+            '.align-items-end',
+            '[class*="align-items-end"]'
+          ];
+          
+          for (const sel of possibleSelectors) {
+            valueContainer = percentageLine.querySelector(sel);
+            if (valueContainer) {
+              console.log(`[Portfolio Totals] Found value container using selector: ${sel}`);
+              break;
+            }
+          }
+
+          if (!valueContainer) {
+            // Try finding by text content pattern
+            const allDivs = percentageLine.querySelectorAll('div');
+            for (const div of allDivs) {
+              const textContent = div.textContent?.trim();
+              if (textContent && /R\$\s*[\d.,]+/.test(textContent)) {
+                valueContainer = div;
+                console.log(`[Portfolio Totals] Found value container by text pattern: "${textContent}"`);
+                break;
+              }
+            }
+
+            if (!valueContainer) {
+              // Last resort: search in the entire line
+              valueContainer = percentageLine;
+            }
+          }
+
+          if (!valueContainer) {
+            console.warn(`[Portfolio Totals] No value container found for category ${categoryCode}`);
+            console.log(`[Portfolio Totals] Available elements in percentage line:`, percentageLine.innerHTML.substring(0, 200) + '...');
+            return;
+          }
+
+          // Find the span with the actual value
+          let valueSpan = valueContainer.querySelector('span.sensitive-field.fw-600');
+          if (!valueSpan) {
+            // Try alternative selectors
+            valueSpan = valueContainer.querySelector('span.sensitive-field');
+            if (!valueSpan) {
+              valueSpan = valueContainer.querySelector('span.fw-600');
+              if (!valueSpan) {
+                valueSpan = valueContainer.querySelector('span[class*="sensitive"]');
+                if (!valueSpan) {
+                  // Try any span with numeric content that looks like currency
+                  const allSpans = valueContainer.querySelectorAll('span');
+                  for (const span of allSpans) {
+                    const text = span.textContent?.trim();
+                    // Skip spans with non-numeric words like "ativos", "item", etc
+                    if (text && /\d+[.,]\d+/.test(text) && 
+                        !text.toLowerCase().includes('ativo') &&
+                        !text.toLowerCase().includes('item') &&
+                        !/^[a-zA-Z]+$/.test(text)) {
+                      valueSpan = span;
+                      console.log(`[Portfolio Totals] Found numeric span: "${text}"`);
+                      break;
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          if (!valueSpan) {
+            console.warn(`[Portfolio Totals] No value span found for category ${categoryCode}`);
+            console.log(`[Portfolio Totals] Available spans in value container:`, 
+              Array.from(valueContainer.querySelectorAll('span')).map(s => s.className + ': ' + s.textContent).join(', '));
+            return;
+          }
+
+          const valueText = valueSpan.textContent?.trim();
+          console.log(`[Portfolio Totals] Category ${categoryCode}: Raw value text = "${valueText}"`);
+
+          if (valueText) {
+            // Don't add R$ prefix if the text already contains non-numeric content
+            let textToParse = valueText;
+            if (!/[a-zA-Z]/.test(valueText)) {
+              // Only add R$ prefix if it's purely numeric (with possible , . - formatting)
+              textToParse = 'R$ ' + valueText;
+            }
+            
+            const value = parseBRLValue(textToParse);
+            console.log(`[Portfolio Totals] Category ${categoryCode}: Parsed value = ${value} (from "${valueText}")`);
+
+            if (value > 0) {
+              const categoryKey = categoryMappings[categoryCode];
+              totals[categoryKey] += value;
+              console.log(`[Portfolio Totals] ✓ Category ${categoryCode} (${categoryKey}): ${textToParse} -> ${value}`);
+            }
+          }
+        } catch (headerError) {
+          console.error(`[Portfolio Totals] Error processing header for category ${categoryCode}:`, headerError);
+        }
+      });
+    } catch (categoryError) {
+      console.error(`[Portfolio Totals] Error processing category ${categoryCode}:`, categoryError);
+    }
+  });
+
+  console.log('[Portfolio Totals] Final totals:', totals);
+  return totals;
+}
+
+function savePortfolioTotalsToCache(totals) {
+  try {
+    chrome.storage.local.set({ portfolio_totals_by_class: totals }, () => {
+      if (chrome.runtime.lastError) {
+        console.error('[Portfolio Totals] Error saving totals to cache:', chrome.runtime.lastError.message);
+      } else {
+        console.log('[Portfolio Totals] Totals saved to cache:', totals);
+      }
+    });
+  } catch (error) {
+    console.error('[Portfolio Totals] Error saving totals to cache:', error);
+  }
+}
+
+function getPortfolioTotalsFromCache(callback) {
+  try {
+    chrome.storage.local.get(['portfolio_totals_by_class'], (result) => {
+      if (chrome.runtime.lastError) {
+        console.error('[Portfolio Totals] Error getting totals from cache:', chrome.runtime.lastError.message);
+        callback(null);
+      } else {
+        console.log('[Portfolio Totals] Totals retrieved from cache:', result.portfolio_totals_by_class);
+        callback(result.portfolio_totals_by_class);
+      }
+    });
+  } catch (error) {
+    console.error('[Portfolio Totals] Error getting totals from cache:', error);
+    callback(null);
+  }
+}
+
+function readHoldingsFromPage(rootEl) {
+  try {
+    const scope = rootEl && typeof rootEl.querySelectorAll === 'function' ? rootEl : document;
+    const map = Object.create(null);
+    
+    console.log('[readHoldingsFromPage] Starting to read holdings from scope:', scope === document ? 'document' : 'rootEl');
+    console.log('[readHoldingsFromPage] Scope element:', scope);
+    
+    const rows = scope.querySelectorAll('tbody.list tr.item');
+    console.log(`[readHoldingsFromPage] Found ${rows.length} holding rows`);
+    
+    if (rows.length === 0) {
+      // Try alternative selectors
+      const altRows1 = scope.querySelectorAll('tr.item');
+      const altRows2 = scope.querySelectorAll('tbody tr');
+      const altRows3 = document.querySelectorAll('tbody.list tr.item');
+      
+      console.log(`[readHoldingsFromPage] Alternative selectors:`);
+      console.log(`- tr.item: ${altRows1.length}`);
+      console.log(`- tbody tr: ${altRows2.length}`);
+      console.log(`- document tbody.list tr.item: ${altRows3.length}`);
+      
+      if (altRows3.length > 0) {
+        console.log('[readHoldingsFromPage] Using document-wide selector as fallback');
+        return readHoldingsFromPage(document);
+      }
+    }
+
+    rows.forEach((r, index) => {
+      try {
+        const codeTd = r.querySelector('td[data-key="code"]');
+        const code = (codeTd?.getAttribute('title') || codeTd?.textContent || '').trim().toUpperCase();
+        if (!code) {
+          console.warn(`[readHoldingsFromPage] Row ${index}: No code found`);
+          return;
+        }
+
+        const priceTd = r.querySelector('td[data-key="price"]');
+        let price = Number(priceTd?.getAttribute('title'));
+        if (!Number.isFinite(price)) {
+          price = parseBRLValue(priceTd?.textContent);
+        }
+
+        const qtyTd = r.querySelector('td[data-key="quantity"]');
+        const qty = Number(qtyTd?.getAttribute('title')) || parseInt(qtyTd?.textContent?.replace(/[^\d]/g, '')) || 0;
+
+        const avgPriceTd = r.querySelector('td[data-key="avgPrice"]');
+        let avgPrice = Number(avgPriceTd?.getAttribute('title'));
+        if (!Number.isFinite(avgPrice)) {
+          avgPrice = parseBRLValue(avgPriceTd?.textContent);
+        }
+        
+        // Try alternative selectors if avgPrice is still not valid
+        if (!Number.isFinite(avgPrice) || avgPrice <= 0) {
+          // Try other common selectors for average price
+          const altSelectors = [
+            'td[data-key="unitValue"]',
+            'td[data-key="averagePrice"]', 
+            'td[data-key="unitPrice"]',
+            'td[title*="médio"]',
+            'td[title*="Médio"]'
+          ];
+          
+          for (const selector of altSelectors) {
+            const altTd = r.querySelector(selector);
+            if (altTd) {
+              let altPrice = Number(altTd.getAttribute('title'));
+              if (!Number.isFinite(altPrice)) {
+                altPrice = parseBRLValue(altTd.textContent);
+              }
+              if (Number.isFinite(altPrice) && altPrice > 0) {
+                avgPrice = altPrice;
+                console.log(`[readHoldingsFromPage] Found avgPrice using alternative selector ${selector}: ${avgPrice}`);
+                break;
+              }
+            }
+          }
+        }
+
+        if (Number.isFinite(price) && Number.isFinite(qty) && qty > 0) {
+          map[code] = { price, qty, avgPrice };
+          console.log(`[readHoldingsFromPage] Row ${index}: ${code} - Price: ${price}, Qty: ${qty}, AvgPrice: ${avgPrice}`);
+        } else {
+          console.warn(`[readHoldingsFromPage] Row ${index}: Invalid data for ${code} - Price: ${price}, Qty: ${qty}, AvgPrice: ${avgPrice}`);
+        }
+      } catch (rowError) {
+        console.error(`[readHoldingsFromPage] Error processing row ${index}:`, rowError);
+      }
+    });
+
+    console.log(`[readHoldingsFromPage] Successfully processed ${Object.keys(map).length} holdings:`, Object.keys(map));
+    return map;
+  } catch (error) {
+    console.error('[readHoldingsFromPage] Error reading holdings:', error);
+    return {};
+  }
+}
+
 // Enhance StatusInvest table by adding column "fm" (final_rank from API)
 (function () {
   const FM_TH_KEY = 'fm';
@@ -717,6 +1079,258 @@
     });
   }
   
+  // Global utility functions for portfolio management
+  function parseBRLValue(text) {
+    if (!text || typeof text !== 'string') return 0;
+    
+    try {
+      // Remove "R$" and spaces, then replace thousand separators and decimal separator
+      let cleanValue = text.replace(/R\$\s*/g, '').trim();
+      
+      // Early detection of non-numeric content - return 0 for words like "ativos", "item", etc
+      if (cleanValue.includes('ativos') || cleanValue.includes('ativo') || 
+          cleanValue.includes('item') || cleanValue.includes('items') ||
+          /^[a-zA-Z\s]+$/.test(cleanValue)) {
+        // Only warn if it's not a common non-numeric word to reduce console spam
+        if (!['ativos', 'ativo', 'item', 'items'].includes(cleanValue.toLowerCase())) {
+          console.warn(`[parseBRLValue] Non-numeric content detected: "${text}" -> "${cleanValue}" -> returning 0`);
+        }
+        return 0;
+      }
+      
+      // Handle negative values
+      const isNegative = cleanValue.startsWith('-');
+      if (isNegative) cleanValue = cleanValue.substring(1);
+      
+      // Replace thousand separators (.) and decimal separator (,)
+      cleanValue = cleanValue.replace(/\./g, '').replace(',', '.');
+      
+      // Check if the clean value contains only valid numeric characters
+      if (!/^\d+(\.\d+)?$/.test(cleanValue)) {
+        console.warn(`[parseBRLValue] Invalid numeric format: "${text}" -> "${cleanValue}"`);
+        return 0;
+      }
+      
+      const number = parseFloat(cleanValue);
+      console.log(`[parseBRLValue] Input: "${text}" -> Clean: "${cleanValue}" -> Number: ${number}`);
+      
+      if (isNaN(number)) {
+        console.error(`[parseBRLValue] Failed to parse: "${text}" -> "${cleanValue}" -> NaN`);
+        return 0;
+      }
+      
+      return isNegative ? -number : number;
+    } catch (error) {
+      console.warn('[Portfolio Totals] Error parsing BRL value:', text, error);
+      return 0;
+    }
+  }
+
+  // Collect portfolio totals by asset class
+  function collectPortfolioTotals() {
+    const totals = {
+      acoes: 0,
+      fiis: 0,
+      etfs: 0,
+      exterior: 0
+    };
+
+    try {
+      // Map of categories to consolidate
+      const categoryMappings = {
+        '1': 'acoes',          // Ações
+        '2': 'fiis',           // FIIs
+        '22': 'fiis',          // FI-Infra
+        '24': 'fiis',          // FI-Agro
+        '6': 'etfs',           // ETFs
+        '901': 'exterior'      // Exterior
+      };
+
+      // Find all category headers and their corresponding total values
+      console.log('[Portfolio Totals] Starting collection with category mappings:', categoryMappings);
+      
+      Object.keys(categoryMappings).forEach(categoryCode => {
+        try {
+          // Find headers with the category class
+          const selector = `h3.text-category-${categoryCode}`;
+          const headers = document.querySelectorAll(selector);
+          console.log(`[Portfolio Totals] Found ${headers.length} headers for selector: ${selector}`);
+          
+          headers.forEach((header, index) => {
+            console.log(`[Portfolio Totals] Processing header ${index + 1} for category ${categoryCode}`);
+            try {
+              // Find the parent collapsible header
+              const collapsibleHeader = header.closest('header.collapsible-header');
+              if (!collapsibleHeader) {
+                console.warn(`[Portfolio Totals] No collapsible header found for category ${categoryCode}`);
+                return;
+              }
+
+              // Find the next element (collapsible body)
+              const collapsibleBody = collapsibleHeader.nextElementSibling;
+              if (!collapsibleBody || !collapsibleBody.classList.contains('collapsible-body')) {
+                console.warn(`[Portfolio Totals] No collapsible body found for category ${categoryCode}`);
+                return;
+              }
+
+              // Look for percentage display line
+              const percentageLine = collapsibleBody.querySelector('div.row div.col.s6.align-right');
+              if (!percentageLine) {
+                console.warn(`[Portfolio Totals] No percentage line found for category ${categoryCode}`);
+                return;
+              }
+
+              // Find the value container within the percentage line
+              let valueContainer = percentageLine.querySelector('div.inline-flex.align-items-center');
+              if (!valueContainer) {
+                // Try alternative selector
+                valueContainer = percentageLine.querySelector('div[class*="inline"]');
+                if (!valueContainer) {
+                  // Look for any div with value-related content
+                  const potentialContainers = percentageLine.querySelectorAll('div');
+                  for (const container of potentialContainers) {
+                    if (container.textContent.includes('R$') || /\d/.test(container.textContent)) {
+                      valueContainer = container;
+                      break;
+                    }
+                  }
+                  
+                  if (!valueContainer) {
+                    // Last resort: search in the entire line
+                    valueContainer = percentageLine;
+                  }
+                }
+              }
+              
+              if (!valueContainer) {
+                console.warn(`[Portfolio Totals] No value container found for category ${categoryCode}`);
+                console.log(`[Portfolio Totals] Available elements in percentage line:`, percentageLine.innerHTML.substring(0, 200) + '...');
+                return;
+              }
+
+              // Find the span with the actual value
+              let valueSpan = valueContainer.querySelector('span.sensitive-field.fw-600');
+              if (!valueSpan) {
+                // Try alternative selectors
+                valueSpan = valueContainer.querySelector('span.sensitive-field');
+                if (!valueSpan) {
+                  valueSpan = valueContainer.querySelector('span.fw-600');
+                  if (!valueSpan) {
+                    valueSpan = valueContainer.querySelector('span[class*="sensitive"]');
+                    if (!valueSpan) {
+                      // Try any span with numeric content that looks like currency
+                      const allSpans = valueContainer.querySelectorAll('span');
+                      for (const span of allSpans) {
+                        const text = span.textContent?.trim();
+                        // Skip spans with non-numeric words like "ativos", "item", etc
+                        if (text && /\d+[.,]\d+/.test(text) && 
+                            !text.toLowerCase().includes('ativo') &&
+                            !text.toLowerCase().includes('item') &&
+                            !/^[a-zA-Z]+$/.test(text)) {
+                          valueSpan = span;
+                          console.log(`[Portfolio Totals] Found numeric span: "${text}"`);
+                          break;
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+              
+              if (!valueSpan) {
+                console.warn(`[Portfolio Totals] No value span found for category ${categoryCode}`);
+                console.log(`[Portfolio Totals] Available spans in value container:`, 
+                  Array.from(valueContainer.querySelectorAll('span')).map(s => s.className + ': ' + s.textContent).join(', '));
+                return;
+              }
+              
+              const valueText = valueSpan.textContent?.trim();
+              console.log(`[Portfolio Totals] Category ${categoryCode}: Raw value text = "${valueText}"`);
+              
+              if (valueText) {
+                // Don't add R$ prefix if the text already contains non-numeric content
+                let textToParse = valueText;
+                if (!/[a-zA-Z]/.test(valueText)) {
+                  // Only add R$ prefix if it's purely numeric (with possible , . - formatting)
+                  textToParse = 'R$ ' + valueText;
+                }
+                
+                const value = parseBRLValue(textToParse);
+                console.log(`[Portfolio Totals] Category ${categoryCode}: Parsed value = ${value} (from "${valueText}")`);
+                
+                if (value > 0) {
+                  const targetCategory = categoryMappings[categoryCode];
+                  totals[targetCategory] += value;
+                  console.log(`[Portfolio Totals] ✓ Category ${categoryCode} (${targetCategory}): ${textToParse} -> ${value}`);
+                } else {
+                  console.warn(`[Portfolio Totals] ✗ Category ${categoryCode}: Invalid value "${valueText}" -> ${value}`);
+                }
+              } else {
+                console.warn(`[Portfolio Totals] ✗ Category ${categoryCode}: No text content found`);
+              }
+              
+            } catch (headerError) {
+              console.error(`[Portfolio Totals] Error processing header for category ${categoryCode}:`, headerError);
+            }
+          });
+        } catch (categoryError) {
+          console.error(`[Portfolio Totals] Error processing category ${categoryCode}:`, categoryError);
+        }
+      });
+
+      console.log('[Portfolio Totals] Final totals:', totals);
+      return totals;
+      
+    } catch (error) {
+      console.error('[Portfolio Totals] Error collecting portfolio totals:', error);
+      return totals; // Return empty totals object
+    }
+  }
+
+  // Save portfolio totals to cache
+  function savePortfolioTotalsToCache(totals) {
+    try {
+      chrome.storage.local.set({ 'portfolio_totals_by_class': totals }, () => {
+        if (chrome.runtime.lastError) {
+          console.error('[Portfolio Totals] Error saving totals to cache:', chrome.runtime.lastError);
+        } else {
+          console.log('[Portfolio Totals] Totals saved to cache:', totals);
+        }
+      });
+    } catch (error) {
+      console.error('[Portfolio Totals] Error saving totals to cache:', error);
+    }
+  }
+
+  // Get portfolio totals from cache
+  function getPortfolioTotalsFromCache(callback) {
+    if (typeof callback !== 'function') {
+      console.error('[Portfolio Totals] Callback is required');
+      return;
+    }
+    
+    try {
+      chrome.storage.local.get(['portfolio_totals_by_class'], (result) => {
+        if (chrome.runtime.lastError) {
+          console.error('[Portfolio Totals] Error getting totals from cache:', chrome.runtime.lastError);
+          callback(null);
+        } else {
+          const totals = result.portfolio_totals_by_class;
+          if (totals) {
+            console.log('[Portfolio Totals] Totals retrieved from cache:', totals);
+            callback(totals);
+          } else {
+            console.warn('[Portfolio Totals] No totals found in cache');
+            callback(null);
+          }
+        }
+      });
+    } catch (error) {
+      console.error('[Portfolio Totals] Error getting totals from cache:', error);
+      callback(null);
+    }
+  }
+
   // Floating Shadow DOM panel: Portfolio Distribution
   function initPortfolioDistributionPanel() {
     const HOST_ID = 'portfolio-distribution-host';
@@ -807,7 +1421,10 @@
 
     // Make real-time update functions available locally
     function updateTargetInRealTime(className, newValue) {
-      if (!isEditMode || !tempAllocationData) return;
+      if (!isEditMode || !tempAllocationData) {
+        console.warn('Cannot update in real-time: isEditMode =', isEditMode, 'tempAllocationData =', tempAllocationData);
+        return;
+      }
       
       const value = parseFloat(newValue) || 0;
       
@@ -821,6 +1438,7 @@
       updateTotalTargetPercentage();
       
       console.log(`Real-time update: ${className} = ${value}%`);
+      console.log('Updated tempAllocationData:', tempAllocationData);
     }
 
     function updateCustomValueInRealTime(className, newValue) {
@@ -939,6 +1557,17 @@
       try {
         // Remove "R$" and spaces, then replace thousand separators and decimal separator
         let cleanValue = text.replace(/R\$\s*/g, '').trim();
+        
+        // Early detection of non-numeric content - return 0 for words like "ativos", "item", etc
+        if (cleanValue.includes('ativos') || cleanValue.includes('ativo') || 
+            cleanValue.includes('item') || cleanValue.includes('items') ||
+            /^[a-zA-Z\s]+$/.test(cleanValue)) {
+          // Only warn if it's not a common non-numeric word to reduce console spam
+          if (!['ativos', 'ativo', 'item', 'items'].includes(cleanValue.toLowerCase())) {
+            console.warn(`[parseBRLValue] Non-numeric content detected: "${text}" -> "${cleanValue}" -> returning 0`);
+          }
+          return 0;
+        }
         
         // Handle negative values
         const isNegative = cleanValue.startsWith('-');
@@ -1067,7 +1696,11 @@
                         const allSpans = valueContainer.querySelectorAll('span');
                         for (const span of allSpans) {
                           const text = span.textContent?.trim();
-                          if (text && /\d+[.,]\d+/.test(text) && !text.toLowerCase().includes('ativo')) {
+                          // Skip spans with non-numeric words like "ativos", "item", etc
+                          if (text && /\d+[.,]\d+/.test(text) && 
+                              !text.toLowerCase().includes('ativo') &&
+                              !text.toLowerCase().includes('item') &&
+                              !/^[a-zA-Z]+$/.test(text)) {
                             valueSpan = span;
                             console.log(`[Portfolio Totals] Found numeric span: "${text}"`);
                             break;
@@ -1089,7 +1722,14 @@
                 console.log(`[Portfolio Totals] Category ${categoryCode}: Raw value text = "${valueText}"`);
                 
                 if (valueText) {
-                  const value = parseBRLValue('R$ ' + valueText); // Add R$ prefix for parsing
+                  // Don't add R$ prefix if the text already contains non-numeric content
+                  let textToParse = valueText;
+                  if (!/[a-zA-Z]/.test(valueText)) {
+                    // Only add R$ prefix if it's purely numeric (with possible , . - formatting)
+                    textToParse = 'R$ ' + valueText;
+                  }
+                  
+                  const value = parseBRLValue(textToParse);
                   console.log(`[Portfolio Totals] Category ${categoryCode}: Parsed value = ${value} (from "${valueText}")`);
                   
                   const consolidatedCategory = categoryMappings[categoryCode];
@@ -1231,9 +1871,27 @@
         const map = Object.create(null);
         
         console.log('[readHoldingsFromPage] Starting to read holdings from scope:', scope === document ? 'document' : 'rootEl');
+        console.log('[readHoldingsFromPage] Scope element:', scope);
         
         const rows = scope.querySelectorAll('tbody.list tr.item');
         console.log(`[readHoldingsFromPage] Found ${rows.length} holding rows`);
+        
+        if (rows.length === 0) {
+          // Try alternative selectors
+          const altRows1 = scope.querySelectorAll('tr.item');
+          const altRows2 = scope.querySelectorAll('tbody tr');
+          const altRows3 = document.querySelectorAll('tbody.list tr.item');
+          
+          console.log(`[readHoldingsFromPage] Alternative selectors:`);
+          console.log(`- tr.item: ${altRows1.length}`);
+          console.log(`- tbody tr: ${altRows2.length}`);
+          console.log(`- document tbody.list tr.item: ${altRows3.length}`);
+          
+          if (altRows3.length > 0) {
+            console.log('[readHoldingsFromPage] Using document-wide selector as fallback');
+            return readHoldingsFromPage(document);
+          }
+        }
         
         rows.forEach((r, index) => {
           try {
@@ -1310,9 +1968,7 @@
         
         // Use temporary data if in edit mode, otherwise use saved data
         const allocationData = isEditMode && tempAllocationData ? tempAllocationData : baseAllocationData;
-        if (!tempAllocationData && isEditMode) {
-          tempAllocationData = JSON.parse(JSON.stringify(baseAllocationData)); // Deep copy
-        }
+        console.log('Using allocation data:', isEditMode ? 'tempAllocationData' : 'baseAllocationData', allocationData);
 
         if (!cachedTotals) {
           $('#distributionContent').innerHTML = '<div class="loading" style="color:#dc2626;">Erro ao carregar totais. Tente novamente.</div>';
@@ -1489,9 +2145,15 @@
     $('#saveTableBtn').addEventListener('click', saveTableChanges);
 
     // Add new allocation row (modified for edit mode)
-    window.addNewAllocationRow = async () => {
+    async function addNewAllocationRow() {
       if (!isEditMode) {
         alert('Entre no modo de edição primeiro.');
+        return;
+      }
+      
+      if (!tempAllocationData) {
+        console.error('tempAllocationData not initialized');
+        alert('Erro: dados temporários não inicializados.');
         return;
       }
       
@@ -1502,10 +2164,6 @@
       const target = parseFloat(prompt(`Digite a porcentagem meta para ${className.trim()}:`, '0') || '0');
       
       try {
-        if (!tempAllocationData) {
-          tempAllocationData = await getAllocationData();
-        }
-        
         if (tempAllocationData[className.trim()]) {
           alert('Já existe uma classe com este nome.');
           return;
@@ -1518,24 +2176,24 @@
           isCustom: true
         };
         
-        // Save permanently to storage AND update temp data
+        console.log('Class added to tempAllocationData:', className.trim());
+        console.log('Updated tempAllocationData:', tempAllocationData);
+        
+        // Save permanently to storage
         await saveAllocationData(tempAllocationData);
         
-        // Force immediate regeneration with updated data
-        console.log('Forcing table regeneration after adding class:', className.trim());
-        console.log('Current tempAllocationData:', tempAllocationData);
-        
-        // Small delay to ensure storage is updated, then regenerate
-        setTimeout(() => {
-          updatePortfolioDistribution();
-        }, 50);
+        // Force immediate regeneration to show the new row
+        updatePortfolioDistribution();
         
         console.log(`Nova classe adicionada e exibida imediatamente: ${className.trim()}`);
       } catch (error) {
         console.error('Error adding new class:', error);
         alert('Erro ao adicionar nova classe.');
       }
-    };
+    }
+
+    // Make it available globally as well for compatibility
+    window.addNewAllocationRow = addNewAllocationRow;
 
     // Fix incorrect Ações percentage (temporary function)
     async function fixIncorrectTargets() {
@@ -1553,9 +2211,13 @@
     fixIncorrectTargets();
 
     // Toggle edit mode
-    function toggleEditMode() {
+    async function toggleEditMode() {
       isEditMode = true;
-      tempAllocationData = null; // Will be initialized in updatePortfolioDistribution
+      
+      // Initialize temporary data immediately with current storage data
+      const currentData = await getAllocationData();
+      tempAllocationData = JSON.parse(JSON.stringify(currentData)); // Deep copy
+      console.log('Edit mode initialized with tempAllocationData:', tempAllocationData);
       
       // Update button visibility
       $('#editTableBtn').style.display = 'none';
@@ -1569,43 +2231,16 @@
     // Save table changes
     async function saveTableChanges() {
       try {
-        // Get fresh data from storage to preserve any add/delete operations that were already saved
-        const freshStorageData = await getAllocationData();
-        console.log('Fresh storage data (includes add/delete):', freshStorageData);
+        if (!tempAllocationData) {
+          console.error('No temporary data to save');
+          return;
+        }
         
-        // Update only the target percentages from the form inputs
-        const targetInputs = document.querySelectorAll('.target-input');
-        console.log('Found target inputs:', targetInputs.length);
+        console.log('Saving changes from tempAllocationData:', tempAllocationData);
         
-        targetInputs.forEach(input => {
-          const className = input.getAttribute('data-class');
-          const value = parseFloat(input.value) || 0;
-          console.log(`Updating target for ${className}: ${input.value} -> ${value}`);
-          
-          // Update in fresh storage data (which includes any add/delete operations)
-          if (freshStorageData[className]) {
-            freshStorageData[className].target = value;
-          }
-        });
-        
-        // Update custom values from form inputs
-        const customValueInputs = document.querySelectorAll('.custom-value-input');
-        console.log('Found custom value inputs:', customValueInputs.length);
-        
-        customValueInputs.forEach(input => {
-          const className = input.getAttribute('data-class');
-          const value = parseFloat(input.value) || 0;
-          console.log(`Updating custom value for ${className}: ${input.value} -> ${value}`);
-          
-          if (freshStorageData[className]) {
-            freshStorageData[className].value = value;
-          }
-        });
-        
-        console.log('Final data before saving (preserves add/delete operations):', freshStorageData);
-        
-        // Save the combined data to permanent storage
-        await saveAllocationData(freshStorageData);
+        // Save the temporary data that has been updated in real-time
+        await saveAllocationData(tempAllocationData);
+        console.log('Final data saved to storage:', tempAllocationData);
         
         // Exit edit mode
         isEditMode = false;
@@ -2164,6 +2799,12 @@
           <h3 class="title">Plano de Venda (Ativos Fora do Top N)</h3>
           <div class="controls">
             <div class="controls-row">
+              <label>Ação
+                <select id="ewSellAction">
+                  <option value="vender" selected>Vender</option>
+                  <option value="comparar">Comparar</option>
+                </select>
+              </label>
               <label style="color:white; font-size:12px; display:flex; align-items:center; gap:4px; cursor:pointer;"><input type="checkbox" id="ewSellShowCurrency"> Mostrar R$</label>
               <button id="ewSellExportCsv" class="toggle-btn" type="button" title="Baixar lista em CSV.">Exportar CSV</button>
               <button id="ewSellToggle" class="toggle-btn" type="button">Ocultar</button>
@@ -2171,7 +2812,7 @@
           </div>
         </div>
         <div class="body" id="ewSellBodyWrap" style="display: none;">
-            <div class="table-wrap no-scroll">
+            <div class="table-wrap no-scroll" id="ewSellTable">
                 <table>
                     <thead>
                         <tr>
@@ -2183,6 +2824,20 @@
                         </tr>
                     </thead>
                     <tbody id="ewSellBody"></tbody>
+                </table>
+            </div>
+            <div class="table-wrap" id="ewCompareTable" style="display: none;">
+                <table class="compare-table">
+                    <thead>
+                        <tr>
+                            <th>Ticker</th>
+                            <th class="num">Qtd p/ comprar</th>
+                            <th class="num">Preço</th>
+                            <th class="num">Valor total</th>
+                            <th class="num" style="text-align:center; width:50px;"><input type="checkbox" id="ewCompareSelectAll" title="Selecionar Todos"></th>
+                        </tr>
+                    </thead>
+                    <tbody id="ewCompareBody"></tbody>
                 </table>
             </div>
         </div>
@@ -2213,10 +2868,15 @@
     const ewSellToggle = $('#ewSellToggle');
     const ewSellExportCsv = $('#ewSellExportCsv');
     const ewSellShowCurrency = $('#ewSellShowCurrency');
+    const ewSellAction = $('#ewSellAction');
+    const ewSellTable = $('#ewSellTable');
+    const ewCompareTable = $('#ewCompareTable');
+    const ewCompareBody = $('#ewCompareBody');
 
     const ewModeInputs = root.querySelectorAll('input[name="ewMode"]');
     let ewMode = 'investir';
     let ewSourceValue = 'fm';
+    let lastComputedPlanData = null;
     const MODE_KEY = 'ew_mode';
     const SOURCE_KEY = 'ew_source';
     function loadMode() { return new Promise((resolve) => { try { chrome.storage.sync.get([MODE_KEY], (r) => resolve(r?.[MODE_KEY] || 'investir')); } catch { resolve('investir'); } }); }
@@ -2225,9 +2885,42 @@
     function saveSource(v) { return new Promise((resolve) => { try { chrome.storage.sync.set({ [SOURCE_KEY]: v }, () => resolve()); } catch { resolve(); } }); }
 
     const SELL_CURRENCY_KEY = 'ew_sell_plan_show_currency';
+    const EW_COMPARE_SELECTED_KEY = 'ew_compare_selected_tickers';
     function loadSellCurrency() { return new Promise((resolve) => { try { chrome.storage.sync.get([SELL_CURRENCY_KEY], (r) => resolve(Boolean(r?.[SELL_CURRENCY_KEY]))); } catch { resolve(false); } }); }
     function saveSellCurrency(v) { return new Promise((resolve) => { try { chrome.storage.sync.set({ [SELL_CURRENCY_KEY]: Boolean(v) }, () => resolve()); } catch { resolve(); } }); }
     
+    function getSelectedTickers(body, selector) {
+        if (!body) return [];
+        return Array.from(body.querySelectorAll(`${selector}:checked`))
+                    .map(chk => chk.dataset.ticker)
+                    .filter(Boolean);
+    }
+
+    async function saveSelectedSellTickers() {
+        const tickers = getSelectedTickers(ewSellBody, '.ew-sell-checkbox');
+        await new Promise(resolve => chrome.storage.local.set({ [EW_SELL_SELECTED_KEY]: tickers }, resolve));
+    }
+
+    async function saveSelectedCompareTickers() {
+        const tickers = getSelectedTickers(ewCompareBody, '.ew-compare-checkbox');
+        await new Promise(resolve => chrome.storage.local.set({ [EW_COMPARE_SELECTED_KEY]: tickers }, resolve));
+    }
+
+    function loadSelectedTickers(key) {
+        return new Promise(resolve => {
+            try {
+                chrome.storage.local.get([key], (result) => {
+                    if (chrome.runtime.lastError) {
+                        console.error('Error loading selected tickers:', chrome.runtime.lastError);
+                        resolve(new Set());
+                    } else {
+                        resolve(new Set(result[key] || []));
+                    }
+                });
+            } catch (e) { console.error('Exception loading selected tickers:', e); resolve(new Set()); }
+        });
+    }
+
     if (ewClearLogBtn) {
       ewClearLogBtn.addEventListener('click', async () => {
         if (confirm('Tem certeza que deseja limpar o histórico de alterações de preços?')) {
@@ -2568,10 +3261,46 @@
   
     function fetchTopNFromAPI(cb) {
       const source = ewSource.value || 'fm';
-      chrome.runtime.sendMessage({ type: 'GET_TOPN_CHECKLIST', source }, (resp) => {
-        if (resp && resp.ok && resp.json && Array.isArray(resp.json.data)) cb(null, resp.json.data);
-        else cb(new Error(resp?.error || 'fetch checklist failed'));
-      });
+      console.log('[fetchTopNFromAPI] Starting API call with source:', source);
+      
+      if (!isExtensionContextValid()) {
+        console.error('[fetchTopNFromAPI] Extension context is invalid, aborting');
+        cb(new Error('Extension context invalidated'));
+        return;
+      }
+      
+      try {
+        chrome.runtime.sendMessage({ type: 'GET_TOPN_CHECKLIST', source }, (resp) => {
+          console.log('[fetchTopNFromAPI] Message callback executed');
+          
+          if (chrome.runtime.lastError) {
+            console.error('[fetchTopNFromAPI] Chrome runtime error:', chrome.runtime.lastError);
+            cb(new Error(`Chrome runtime error: ${chrome.runtime.lastError.message}`));
+            return;
+          }
+          
+          console.log('[fetchTopNFromAPI] Response received:', {
+            hasResp: !!resp,
+            isOk: resp?.ok,
+            hasJson: resp?.json,
+            hasData: resp?.json?.data,
+            isArray: Array.isArray(resp?.json?.data),
+            dataLength: resp?.json?.data?.length
+          });
+          
+          if (resp && resp.ok && resp.json && Array.isArray(resp.json.data)) {
+            console.log('[fetchTopNFromAPI] Success - returning', resp.json.data.length, 'items');
+            cb(null, resp.json.data);
+          } else {
+            const errorMsg = resp?.error || 'fetch checklist failed';
+            console.error('[fetchTopNFromAPI] API error:', errorMsg, 'Full response:', resp);
+            cb(new Error(errorMsg));
+          }
+        });
+      } catch (sendError) {
+        console.error('[fetchTopNFromAPI] Error sending message:', sendError);
+        cb(new Error(`Message send error: ${sendError.message}`));
+      }
     }
   
     function normalizeChecklist(arr) {
@@ -2583,281 +3312,475 @@
     }
   
     // integer equal-weight allocator implemented in recompute()
+    
+    // Helper function to check if extension context is valid
+    function isExtensionContextValid() {
+      try {
+        return chrome.runtime && chrome.runtime.id;
+      } catch (e) {
+        console.error('[Extension Context] Context invalidated:', e);
+        return false;
+      }
+    }
+
+    function populateCompareTable() {
+      console.log('[populateCompareTable] === INÍCIO ===');
+      
+      // Verificar se os elementos existem
+      if (!ewCompareBody) {
+        console.error('[populateCompareTable] ERROR: ewCompareBody is null!');
+        return;
+      }
+      
+      if (!ewN || !ewSource) {
+        console.error('[populateCompareTable] ERROR: ewN or ewSource is null!');
+        return;
+      }
+      
+      const N = Number(ewN.value) || 10;
+      console.log('[populateCompareTable] N =', N);
+      
+      // Limpar completamente a tabela de comparação
+      ewCompareBody.innerHTML = '';
+      console.log('[populateCompareTable] Tabela limpa');
+      
+      if (!isExtensionContextValid()) {
+        console.error('[populateCompareTable] Extension context is invalid, aborting');
+        ewCompareBody.innerHTML = `
+          <tr>
+            <td colspan="4" style="text-align: center; padding: 20px; color: #c62828;">
+              Contexto da extensão inválido. Por favor, recarregue a página.
+            </td>
+          </tr>
+        `;
+        return;
+      }
+      
+      try {
+        // Buscar holdings do storage
+        chrome.storage.local.get(['my_portfolio_holdings'], (result) => {
+          console.log('[populateCompareTable] Storage callback executado');
+          
+          if (chrome.runtime.lastError) {
+            console.error('[populateCompareTable] Chrome runtime error:', chrome.runtime.lastError);
+            ewCompareBody.innerHTML = `
+              <tr>
+                <td colspan="4" style="text-align: center; padding: 20px; color: #c62828;">
+                  Erro no Chrome storage: ${chrome.runtime.lastError.message}
+                </td>
+              </tr>
+            `;
+            return;
+          }
+          
+          const holdings = result.my_portfolio_holdings;
+          console.log('[populateCompareTable] Holdings obtidas:', holdings ? Object.keys(holdings).length : 'null', 'itens');
+          
+          if (!holdings || typeof holdings !== 'object' || Object.keys(holdings).length === 0) {
+            console.warn('[populateCompareTable] Nenhum holding encontrado');
+            ewCompareBody.innerHTML = `
+              <tr>
+                <td colspan="4" style="text-align: center; padding: 20px; color: #6b7280; font-style: italic;">
+                  Sua carteira ainda não foi carregada. Por favor, clique no botão "Atualizar Minhas Ações" para fazer a leitura inicial.
+                </td>
+              </tr>
+            `;
+            return;
+          }
+          
+          // Buscar dados da API
+          fetchTopNFromAPI((err, data) => {
+            console.log('[populateCompareTable] API callback executado - erro:', !!err, 'dados:', data ? data.length : 'null');
+            
+            if (err) {
+              console.error('[populateCompareTable] Erro na API:', err);
+              ewCompareBody.innerHTML = `
+                <tr>
+                  <td colspan="4" style="text-align: center; padding: 20px; color: #c62828;">
+                    Erro ao buscar dados da API: ${err.message}
+                  </td>
+                </tr>
+              `;
+              return;
+            }
+            
+            try {
+              const normalized = normalizeChecklist(data);
+              const top = normalized.slice(0, N);
+              console.log('[populateCompareTable] Top N processado:', top.map(t => t.code));
+              
+              if (top.length === 0) {
+                ewCompareBody.innerHTML = `
+                  <tr>
+                    <td colspan="4" style="text-align: center; padding: 20px; color: #6b7280; font-style: italic;">
+                      Nenhuma ação encontrada no Top N.
+                    </td>
+                  </tr>
+                `;
+                return;
+              }
+              
+              // Processar cada ticker do Top N
+              let rowsAdded = 0;
+              top.forEach((topStock, index) => {
+                try {
+                  const fromCache = holdings[topStock.code] || { price: NaN, qty: 0, avgPrice: NaN };
+                  const price = Number.isFinite(topStock.price) && topStock.price > 0 ? topStock.price : fromCache.price;
+                  const qty = Number.isFinite(fromCache.qty) ? fromCache.qty : 0;
+                  const currentAmount = Number.isFinite(price) && price > 0 && qty > 0 ? price * qty : 0;
+                  
+                  console.log(`[populateCompareTable] Processando ${index + 1}/${top.length} - ${topStock.code}: qty=${qty}, price=${price}, currentAmount=${currentAmount}`);
+                  
+                  // Criar linha da tabela
+                  const tr = document.createElement('tr');
+                  if (qty > 0) tr.classList.add('row-holding');
+                  
+                  // APENAS 4 COLUNAS - SEM RANK OU OUTRAS COLUNAS
+                  tr.innerHTML = `
+                    <td>${topStock.code}F</td>
+                    <td class="num">${qty > 0 ? qty : '<span class="muted">—</span>'}</td>
+                    <td class="num">${Number.isFinite(price) && price > 0 ? fmtNumberBR(price) : '<span class="muted">—</span>'}</td>
+                    <td class="num">${currentAmount > 0 ? fmtBRL(currentAmount) : '<span class="muted">—</span>'}</td>
+                  `;
+                  
+                  // Adicionar à tabela de comparação (NÃO à tabela principal)
+                  ewCompareBody.appendChild(tr);
+                  rowsAdded++;
+                  
+                  console.log(`[populateCompareTable] Linha adicionada para ${topStock.code}F (${rowsAdded} total)`);
+                  
+                } catch (rowError) {
+                  console.error(`[populateCompareTable] Erro processando linha ${index} (${topStock.code}):`, rowError);
+                }
+              });
+              
+              console.log(`[populateCompareTable] === CONCLUÍDO === ${rowsAdded} linhas adicionadas`);
+              
+            } catch (processingError) {
+              console.error('[populateCompareTable] Erro no processamento:', processingError);
+              ewCompareBody.innerHTML = `
+                <tr>
+                  <td colspan="4" style="text-align: center; padding: 20px; color: #c62828;">
+                    Erro no processamento: ${processingError.message}
+                  </td>
+                </tr>
+              `;
+            }
+          });
+        });
+      } catch (mainError) {
+        console.error('[populateCompareTable] Erro principal:', mainError);
+        console.error('[populateCompareTable] Stack trace:', mainError.stack);
+        
+        if (ewCompareBody) {
+          ewCompareBody.innerHTML = `
+            <tr>
+              <td colspan="4" style="text-align: center; padding: 20px; color: #c62828;">
+                Erro geral: ${mainError.message}
+              </td>
+            </tr>
+          `;
+        }
+      }
+    }
   
     function recompute() {
       const N = Number(ewN.value) || 10;
       const totalFromInput = parseMoneyBR(ewTotal.value);
   
       chrome.storage.local.get(['my_portfolio_holdings'], (result) => {
-        const holdings = result.my_portfolio_holdings;
-  
-        if (!holdings || typeof holdings !== 'object' || Object.keys(holdings).length === 0) {
-          ewBody.innerHTML = `
+        try {
+          const holdings = result.my_portfolio_holdings;
+    
+          if (!holdings || typeof holdings !== 'object' || Object.keys(holdings).length === 0) {
+            ewBody.innerHTML = `
             <tr>
               <td colspan="11" style="text-align: center; padding: 20px; color: #6b7280; font-style: italic;">
                 Sua carteira ainda não foi carregada. Por favor, clique no botão "Atualizar Minhas Ações" para fazer a leitura inicial.
               </td>
             </tr>
           `;
-          return;
-        }
-  
-        fetchTopNFromAPI((err, data) => {
-          if (err) {
-            ewBody.innerHTML = `<tr><td colspan="11" style="text-align: center; padding: 20px; color: #c62828;">Erro ao buscar dados da API: ${err.message}</td></tr>`;
             return;
           }
-          const normalized = normalizeChecklist(data);
-          const top = normalized.slice(0, N);
-          const topTickers = new Set(top.map(t => t.code));
-  
-          let targetPer = 0;
-          if (ewMode === 'rebalancear') {
-            targetPer = Number.isFinite(totalFromInput) && totalFromInput > 0 ? totalFromInput / N : 0;
-          } else { // 'investir'
-            const investmentAmount = totalFromInput;
-            // Consider only the cost basis of assets that are in the Top N list, not the whole portfolio.
-            // This makes the 'target per asset' calculation more intuitive for the user.
-            const currentPortfolioTotal = Object.entries(holdings)
-              .filter(([ticker, _]) => topTickers.has(ticker))
-              .reduce((acc, [_, stock]) => {
-                if (stock && Number.isFinite(stock.avgPrice) && stock.avgPrice > 0 && Number.isFinite(stock.qty)) {
-                  return acc + (stock.avgPrice * stock.qty);
-                }
-                return acc;
-              }, 0);
-            const finalPortfolioTotal = currentPortfolioTotal + (Number.isFinite(investmentAmount) ? investmentAmount : 0);
-            targetPer = finalPortfolioTotal > 0 ? finalPortfolioTotal / N : 0;
-          }
-  
-          ewBody.innerHTML = '';
-          const computed = [];
-          top.forEach((it) => {
-            const fromCache = holdings[it.code] || { price: NaN, qty: 0, avgPrice: NaN };
-            const price = Number.isFinite(it.price) && it.price > 0 ? it.price : fromCache.price;
-            const qty = Number.isFinite(fromCache.qty) ? fromCache.qty : 0;
-            const avgPrice = fromCache.avgPrice;
-            const currentAmount = Number.isFinite(price) && price > 0 && qty > 0 ? price * qty : 0; // Market Value
-            const investedAmount = (Number.isFinite(avgPrice) && avgPrice > 0 && qty > 0) ? avgPrice * qty : 0; // Cost Basis
-            computed.push({
-              rank: it.rank,
-              code: it.code,
-              price,
-              qty,
-              avgPrice,
-              currentAmount, // For display
-              investedAmount, // For calculation
-              targetPer,
-            });
-          });
-          
-          let budgetCents = Number.isFinite(totalFromInput) && totalFromInput > 0 ? Math.round(totalFromInput * 100) : 0;
-          let spendMap = Object.create(null);
-          let qtyMap = Object.create(null);
-  
-          if (ewMode === 'rebalancear') {
-            const targetTotalCents = Number.isFinite(totalFromInput) && totalFromInput > 0 ? Math.round(totalFromInput * 100) : 0;
-            const sumBaseCents = computed.reduce((acc, row) => acc + (Number.isFinite(row.investedAmount) ? Math.round(row.investedAmount * 100) : 0), 0);
-            budgetCents = Math.max(0, targetTotalCents - sumBaseCents);
-            const items = computed.map((row) => {
-              const priceCents = Number.isFinite(row.price) && row.price > 0 ? Math.round(row.price * 100) : 0;
-              const baseCents = Number.isFinite(row.investedAmount) ? Math.round(row.investedAmount * 100) : 0;
-              const targetCents = Number.isFinite(row.targetPer) ? Math.round(row.targetPer * 100) : 0;
-              const targetQty = priceCents > 0 ? Math.floor(targetCents / priceCents) : 0;
-              const baseQty = Number.isFinite(row.qty) ? row.qty : 0;
-              const deltaQty = Math.max(0, targetQty - baseQty);
-              const deficitCents = Math.max(0, targetCents - baseCents);
-              return { code: row.code, rank: row.rank, priceCents, baseCents, targetCents, targetQty, deltaQty, deficitCents, q: 0, spendCents: 0 };
-            });
-  
-            const minEligible = () => {
-              let m = Number.MAX_SAFE_INTEGER;
-              for (const it of items) if (it.priceCents > 0 && it.deltaQty > 0) m = Math.min(m, it.priceCents);
-              return m;
-            };
-            const canBuyAny = () => items.some((it) => it.deltaQty > 0 && it.priceCents > 0 && it.priceCents <= budgetCents);
-            while (canBuyAny() && budgetCents >= minEligible()) {
-              for (const it of items) {
-                const after = it.baseCents + it.spendCents;
-                it.deficitCents = Math.max(0, it.targetCents - after);
+    
+          fetchTopNFromAPI(async (err, data) => {
+            try {
+              if (err) {
+                ewBody.innerHTML = `<tr><td colspan="11" style="text-align: center; padding: 20px; color: #c62828;">Erro ao buscar dados da API: ${err.message}</td></tr>`;
+                lastComputedPlanData = null;
+                return;
               }
-              let best = null;
-              let bestRatio = -1;
-              for (const it of items) {
-                if (it.deltaQty <= 0 || it.priceCents <= 0 || it.priceCents > budgetCents) continue;
-                const ratio = it.priceCents > 0 ? (it.deficitCents / it.priceCents) : 0;
-                if (
-                  ratio > bestRatio ||
-                  (Math.abs(ratio - bestRatio) < 1e-9 && (
-                    it.deficitCents > (best?.deficitCents ?? -1) ||
-                    (it.deficitCents === (best?.deficitCents ?? -1) && (
-                      it.priceCents < (best?.priceCents ?? Number.MAX_SAFE_INTEGER) ||
-                      (it.priceCents === (best?.priceCents ?? 0) && it.rank < (best?.rank ?? 1e9))
-                    ))
-                  ))
-                ) {
-                  best = it; bestRatio = ratio;
-                }
+              const normalized = normalizeChecklist(data);
+              const top = normalized.slice(0, N);
+              const topTickers = new Set(top.map(t => t.code));
+      
+              let targetPer = 0;
+              if (ewMode === 'rebalancear') {
+                targetPer = Number.isFinite(totalFromInput) && totalFromInput > 0 ? totalFromInput / N : 0;
+              } else { // 'investir'
+                const investmentAmount = totalFromInput;
+                // Consider only the cost basis of assets that are in the Top N list, not the whole portfolio.
+                // This makes the 'target per asset' calculation more intuitive for the user.
+                const currentPortfolioTotal = Object.entries(holdings)
+                  .filter(([ticker, _]) => topTickers.has(ticker))
+                  .reduce((acc, [_, stock]) => {
+                    if (stock && Number.isFinite(stock.avgPrice) && stock.avgPrice > 0 && Number.isFinite(stock.qty)) {
+                      return acc + (stock.avgPrice * stock.qty);
+                    }
+                    return acc;
+                  }, 0);
+                const finalPortfolioTotal = currentPortfolioTotal + (Number.isFinite(investmentAmount) ? investmentAmount : 0);
+                targetPer = finalPortfolioTotal > 0 ? finalPortfolioTotal / N : 0;
               }
-              if (!best) break;
-              best.q += 1;
-              best.deltaQty -= 1;
-              best.spendCents += best.priceCents;
-              budgetCents -= best.priceCents;
-            }
-  
-            spendMap = Object.create(null);
-            qtyMap = Object.create(null);
-            for (const it of items) { spendMap[it.code] = (it.spendCents || 0) / 100; qtyMap[it.code] = it.q || 0; }
-          } else {
-            const items = computed.map((row) => {
-              const priceCents = Number.isFinite(row.price) && row.price > 0 ? Math.round(row.price * 100) : 0;
-              const baseCents = Number.isFinite(row.investedAmount) ? Math.round(row.investedAmount * 100) : 0;
-              const targetCents = Number.isFinite(row.targetPer) ? Math.round(row.targetPer * 100) : 0;
-              const deficitCents = Math.max(0, targetCents - baseCents);
-              return { code: row.code, rank: row.rank, priceCents, baseCents, targetCents, deficitCents, q: 0, spendCents: 0 };
-            });
-  
-            const minPrice = () => {
-              let m = Number.MAX_SAFE_INTEGER;
-              for (const it of items) if (it.priceCents > 0) m = Math.min(m, it.priceCents);
-              return m;
-            };
-  
-            const canAffordAny = () => items.some((it) => it.priceCents > 0 && it.priceCents <= budgetCents);
-            while (canAffordAny() && budgetCents >= minPrice()) {
-              for (const it of items) {
-                const after = it.baseCents + it.spendCents;
-                it.deficitCents = Math.max(0, it.targetCents - after);
-              }
-  
-              const eligByDef = items.filter((it) => it.deficitCents > 0 && it.priceCents > 0 && it.priceCents <= budgetCents);
-  
-              let best = null;
-              if (eligByDef.length) {
-                // For 'investir' mode, prioritize the one with the largest absolute deficit to be more intuitive.
-                let bestDeficit = -1;
-                for (const it of eligByDef) {
-                  if (
-                    it.deficitCents > bestDeficit ||
-                    (it.deficitCents === bestDeficit && (
-                      it.priceCents < (best?.priceCents ?? Number.MAX_SAFE_INTEGER) ||
-                      (it.priceCents === (best?.priceCents ?? 0) && it.rank < (best?.rank ?? 1e9))
-                    ))
-                  ) {
-                    best = it;
-                    bestDeficit = it.deficitCents;
+      
+              ewBody.innerHTML = '';
+              const computed = [];
+              top.forEach((it) => {
+                const fromCache = holdings[it.code] || { price: NaN, qty: 0, avgPrice: NaN };
+                const price = Number.isFinite(it.price) && it.price > 0 ? it.price : fromCache.price;
+                const qty = Number.isFinite(fromCache.qty) ? fromCache.qty : 0;
+                const avgPrice = fromCache.avgPrice;
+                const currentAmount = Number.isFinite(price) && price > 0 && qty > 0 ? price * qty : 0; // Market Value
+                const investedAmount = (Number.isFinite(avgPrice) && avgPrice > 0 && qty > 0) ? avgPrice * qty : 0; // Cost Basis
+                
+                console.log(`[Equal-Weight Debug] ${it.code}: fromCache=`, fromCache, 
+                           `price=${price}, qty=${qty}, avgPrice=${avgPrice}, currentAmount=${currentAmount}, investedAmount=${investedAmount}`);
+                
+                computed.push({
+                  rank: it.rank,
+                  code: it.code,
+                  price,
+                  qty,
+                  avgPrice,
+                  currentAmount, // For display
+                  investedAmount, // For calculation
+                  targetPer,
+                });
+              });
+              
+              let budgetCents = Number.isFinite(totalFromInput) && totalFromInput > 0 ? Math.round(totalFromInput * 100) : 0;
+              let spendMap = Object.create(null);
+              let qtyMap = Object.create(null);
+      
+              if (ewMode === 'rebalancear') {
+                const targetTotalCents = Number.isFinite(totalFromInput) && totalFromInput > 0 ? Math.round(totalFromInput * 100) : 0;
+                const sumBaseCents = computed.reduce((acc, row) => acc + (Number.isFinite(row.investedAmount) ? Math.round(row.investedAmount * 100) : 0), 0);
+                budgetCents = Math.max(0, targetTotalCents - sumBaseCents);
+                const items = computed.map((row) => {
+                  const priceCents = Number.isFinite(row.price) && row.price > 0 ? Math.round(row.price * 100) : 0;
+                  const baseCents = Number.isFinite(row.investedAmount) ? Math.round(row.investedAmount * 100) : 0;
+                  const targetCents = Number.isFinite(row.targetPer) ? Math.round(row.targetPer * 100) : 0;
+                  const targetQty = priceCents > 0 ? Math.floor(targetCents / priceCents) : 0;
+                  const baseQty = Number.isFinite(row.qty) ? row.qty : 0;
+                  const deltaQty = Math.max(0, targetQty - baseQty);
+                  const deficitCents = Math.max(0, targetCents - baseCents);
+                  return { code: row.code, rank: row.rank, priceCents, baseCents, targetCents, targetQty, deltaQty, deficitCents, q: 0, spendCents: 0 };
+                });
+      
+                const minEligible = () => {
+                  let m = Number.MAX_SAFE_INTEGER;
+                  for (const it of items) if (it.priceCents > 0 && it.deltaQty > 0) m = Math.min(m, it.priceCents);
+                  return m;
+                };
+                const canBuyAny = () => items.some((it) => it.deltaQty > 0 && it.priceCents > 0 && it.priceCents <= budgetCents);
+                while (canBuyAny() && budgetCents >= minEligible()) {
+                  for (const it of items) {
+                    const after = it.baseCents + it.spendCents;
+                    it.deficitCents = Math.max(0, it.targetCents - after);
                   }
+                  let best = null;
+                  let bestRatio = -1;
+                  for (const it of items) {
+                    if (it.deltaQty <= 0 || it.priceCents <= 0 || it.priceCents > budgetCents) continue;
+                    const ratio = it.priceCents > 0 ? (it.deficitCents / it.priceCents) : 0;
+                    if (
+                      ratio > bestRatio ||
+                      (Math.abs(ratio - bestRatio) < 1e-9 && (
+                        it.deficitCents > (best?.deficitCents ?? -1) ||
+                        (it.deficitCents === (best?.deficitCents ?? -1) && (
+                          it.priceCents < (best?.priceCents ?? Number.MAX_SAFE_INTEGER) ||
+                          (it.priceCents === (best?.priceCents ?? 0) && it.rank < (best?.rank ?? 1e9))
+                        ))
+                      ))
+                    ) {
+                      best = it; bestRatio = ratio;
+                    }
+                  }
+                  if (!best) break;
+                  best.q += 1;
+                  best.deltaQty -= 1;
+                  best.spendCents += best.priceCents;
+                  budgetCents -= best.priceCents;
                 }
+      
+                spendMap = Object.create(null);
+                qtyMap = Object.create(null);
+                for (const it of items) { spendMap[it.code] = (it.spendCents || 0) / 100; qtyMap[it.code] = it.q || 0; }
               } else {
-                let bestVal = Number.MAX_SAFE_INTEGER;
-                for (const it of items) {
-                  if (it.priceCents <= 0 || it.priceCents > budgetCents) continue;
-                  const after = it.baseCents + it.spendCents;
-                  if (
-                    after < bestVal ||
-                    (after === bestVal && (
-                      it.priceCents < (best?.priceCents ?? Number.MAX_SAFE_INTEGER) ||
-                      (it.priceCents === (best?.priceCents ?? 0) && it.rank < (best?.rank ?? 1e9))
-                    ))
-                  ) {
-                    best = it; bestVal = after;
+                const items = computed.map((row) => {
+                  const priceCents = Number.isFinite(row.price) && row.price > 0 ? Math.round(row.price * 100) : 0;
+                  const baseCents = Number.isFinite(row.investedAmount) ? Math.round(row.investedAmount * 100) : 0;
+                  const targetCents = Number.isFinite(row.targetPer) ? Math.round(row.targetPer * 100) : 0;
+                  const deficitCents = Math.max(0, targetCents - baseCents);
+                  return { code: row.code, rank: row.rank, priceCents, baseCents, targetCents, deficitCents, q: 0, spendCents: 0 };
+                });
+      
+                const minPrice = () => {
+                  let m = Number.MAX_SAFE_INTEGER;
+                  for (const it of items) if (it.priceCents > 0) m = Math.min(m, it.priceCents);
+                  return m;
+                };
+      
+                const canAffordAny = () => items.some((it) => it.priceCents > 0 && it.priceCents <= budgetCents);
+                while (canAffordAny() && budgetCents >= minPrice()) {
+                  for (const it of items) {
+                    const after = it.baseCents + it.spendCents;
+                    it.deficitCents = Math.max(0, it.targetCents - after);
                   }
+      
+                  const eligByDef = items.filter((it) => it.deficitCents > 0 && it.priceCents > 0 && it.priceCents <= budgetCents);
+      
+                  let best = null;
+                  if (eligByDef.length) {
+                    // For 'investir' mode, prioritize the one with the largest absolute deficit to be more intuitive.
+                    let bestDeficit = -1;
+                    for (const it of eligByDef) {
+                      if (
+                        it.deficitCents > bestDeficit ||
+                        (it.deficitCents === bestDeficit && (
+                          it.priceCents < (best?.priceCents ?? Number.MAX_SAFE_INTEGER) ||
+                          (it.priceCents === (best?.priceCents ?? 0) && it.rank < (best?.rank ?? 1e9))
+                        ))
+                      ) {
+                        best = it;
+                        bestDeficit = it.deficitCents;
+                      }
+                    }
+                  } else {
+                    let bestVal = Number.MAX_SAFE_INTEGER;
+                    for (const it of items) {
+                      if (it.priceCents <= 0 || it.priceCents > budgetCents) continue;
+                      const after = it.baseCents + it.spendCents;
+                      if (
+                        after < bestVal ||
+                        (after === bestVal && (
+                          it.priceCents < (best?.priceCents ?? Number.MAX_SAFE_INTEGER) ||
+                          (it.priceCents === (best?.priceCents ?? 0) && it.rank < (best?.rank ?? 1e9))
+                        ))
+                      ) {
+                        best = it; bestVal = after;
+                      }
+                    }
+                    if (!best) break;
+                  }
+      
+                  best.q += 1;
+                  best.spendCents += best.priceCents;
+                  budgetCents -= best.priceCents;
                 }
-                if (!best) break;
+      
+                spendMap = Object.create(null);
+                qtyMap = Object.create(null);
+                for (const it of items) { spendMap[it.code] = (it.spendCents || 0) / 100; qtyMap[it.code] = it.q || 0; }
               }
-  
-              best.q += 1;
-              best.spendCents += best.priceCents;
-              budgetCents -= best.priceCents;
-            }
-  
-            spendMap = Object.create(null);
-            qtyMap = Object.create(null);
-            for (const it of items) { spendMap[it.code] = (it.spendCents || 0) / 100; qtyMap[it.code] = it.q || 0; }
-          }
-  
-          computed.forEach((row) => {
-            const tr = document.createElement('tr');
-            const cost = Number(spendMap[row.code] || 0);
-            const valueAfter = (Number.isFinite(row.investedAmount) ? row.investedAmount : 0) + cost;
-            const faltaAfter = Number.isFinite(row.targetPer) ? Math.max(0, row.targetPer - valueAfter) : NaN;
-            const qtyToBuy = Number(qtyMap[row.code] || 0);
-            if (Number.isFinite(row.qty) && row.qty > 0) tr.classList.add('row-holding');
-            tr.innerHTML = `
+      
+              lastComputedPlanData = { computed, qtyMap };
+    
+              computed.forEach((row) => {
+                const tr = document.createElement('tr');
+                const cost = Number(spendMap[row.code] || 0);
+                const valueAfter = (Number.isFinite(row.investedAmount) ? row.investedAmount : 0) + cost;
+                const faltaAfter = Number.isFinite(row.targetPer) ? Math.max(0, row.targetPer - valueAfter) : NaN;
+                const qtyToBuy = Number(qtyMap[row.code] || 0);
+                if (row.qty > 0) tr.classList.add('row-holding');
+                tr.innerHTML = `
               <td>${row.rank}</td>
-              <td>${row.code}</td>
-              <td class="num">${Number.isFinite(row.price) ? fmtBRL(row.price) : '<span class="muted">—</span>'}</td>
-              <td class="num">${Number.isFinite(row.avgPrice) ? fmtBRL(row.avgPrice) : '<span class="muted">—</span>'}</td>
+              <td>${row.code}F</td>
+              <td class="num">${Number.isFinite(row.price) ? fmtNumberBR(row.price) : '<span class="muted">—</span>'}</td>
+              <td class="num">${Number.isFinite(row.avgPrice) && row.avgPrice > 0 ? fmtNumberBR(row.avgPrice) : '<span class="muted">—</span>'}</td>
               <td class="num">${Number.isFinite(row.qty) ? row.qty : '<span class="muted">—</span>'}</td>
-              <td class="num">${row.qty > 0 ? fmtBRL(row.investedAmount) : '<span class="muted">—</span>'}</td>
+              <td class="num">${row.qty > 0 && Number.isFinite(row.currentAmount) ? fmtBRL(row.currentAmount) : '<span class="muted">—</span>'}</td>
               <td class="num">${Number.isFinite(row.targetPer) ? fmtBRL(row.targetPer) : '<span class="muted">—</span>'}</td>
               <td class="num">${(Number.isFinite(row.investedAmount) || Number.isFinite(cost)) ? fmtBRL(valueAfter) : '<span class="muted">—</span>'}</td>
               <td class="num">${Number.isFinite(faltaAfter) ? fmtBRL(faltaAfter) : '<span class="muted">—</span>'}</td>
               <td class="num">${qtyToBuy > 0 ? qtyToBuy : '<span class="muted">—</span>'}</td>
               <td class="num">${fmtBRL(cost)}</td>
             `;
-            ewBody.appendChild(tr);
-          });
-  
-          const remainder = Math.max(0, budgetCents) / 100;
-          const remTr = document.createElement('tr');
-          remTr.innerHTML = `
+                ewBody.appendChild(tr);
+              });
+      
+              const remainder = Math.max(0, budgetCents) / 100;
+              const remTr = document.createElement('tr');
+              remTr.innerHTML = `
             <td></td>
             <td><strong>Sobra</strong></td>
             <td class="num" colspan="8"><span class="muted">—</span></td>
             <td class="num">${fmtBRL(remainder)}</td>
           `;
-          ewBody.appendChild(remTr);
-
-          // --- SELL PLAN LOGIC ---
-          const ewSellBody = $('#ewSellBody');
-          ewSellBody.innerHTML = '';
-
-          const stocksToSell = [];
-          for (const ticker in holdings) {
-            if (holdings[ticker] && holdings[ticker].qty > 0 && !topTickers.has(ticker)) {
-              const stock = holdings[ticker];
-              stocksToSell.push({
-                code: ticker,
-                qty: stock.qty,
-                price: stock.price,
-                totalValue: (Number.isFinite(stock.price) && Number.isFinite(stock.qty)) ? stock.price * stock.qty : 0,
-              });
-            }
-          }
-
-          if (stocksToSell.length > 0) {
-            ewSellHeader.style.display = 'flex';
-            // Visibility of ewSellBodyWrap is controlled by its own collapse logic
-            const showCurrency = ewSellShowCurrency.checked;
-            const priceFormatter = showCurrency ? fmtBRL : fmtNumberBR;
-
-            stocksToSell.sort((a, b) => b.totalValue - a.totalValue);
-            let totalSellValue = 0;
-            stocksToSell.forEach(stock => {
-              const tr = document.createElement('tr');
-              tr.innerHTML = `
+              ewBody.appendChild(remTr);
+    
+              // --- SELL PLAN LOGIC ---
+              const ewSellBody = $('#ewSellBody');
+              ewSellBody.innerHTML = '';
+    
+              const stocksToSell = [];
+              for (const ticker in holdings) {
+                if (holdings[ticker] && holdings[ticker].qty > 0 && !topTickers.has(ticker)) {
+                  const stock = holdings[ticker];
+                  stocksToSell.push({
+                    code: ticker,
+                    qty: stock.qty,
+                    price: stock.price,
+                    totalValue: (Number.isFinite(stock.price) && Number.isFinite(stock.qty)) ? stock.price * stock.qty : 0,
+                  });
+                }
+              }
+    
+              if (stocksToSell.length > 0) {
+                ewSellHeader.style.display = 'flex';
+                // Visibility of ewSellBodyWrap is controlled by its own collapse logic
+                const showCurrency = ewSellShowCurrency.checked;
+                const priceFormatter = showCurrency ? fmtBRL : fmtNumberBR;
+    
+                stocksToSell.sort((a, b) => b.totalValue - a.totalValue);
+                let totalSellValue = 0;
+                stocksToSell.forEach(stock => {
+                  const tr = document.createElement('tr');
+                  tr.innerHTML = `
                 <td>${stock.code}F</td>
                 <td class="num">${stock.qty}</td>
-                <td class="num">${Number.isFinite(stock.price) ? priceFormatter(stock.price) : '<span class="muted">—</span>'}</td>
+                <td class="num">${Number.isFinite(stock.price) ? fmtNumberBR(stock.price) : '<span class="muted">—</span>'}</td>
                 <td class="num">${Number.isFinite(stock.totalValue) ? fmtBRL(stock.totalValue) : '<span class="muted">—</span>'}</td>
                 <td class="num" style="text-align:center;"><input type="checkbox" class="ew-sell-checkbox" data-ticker="${stock.code}"></td>
               `;
-              ewSellBody.appendChild(tr);
-              if (Number.isFinite(stock.totalValue)) totalSellValue += stock.totalValue;
-            });
-            const totalTr = document.createElement('tr');
-            totalTr.style.fontWeight = 'bold';
-            totalTr.style.borderTop = '2px solid #d1d5db';
-            totalTr.innerHTML = `<td colspan="3">Valor Total a Vender</td><td class="num" id="ewSellTotalValue">${fmtBRL(totalSellValue)}</td><td></td>`;
-            ewSellBody.appendChild(totalTr);
-          } else {
-            ewSellHeader.style.display = 'none';
-            ewSellBodyWrap.style.display = 'none';
-          }
-          // --- END OF SELL PLAN LOGIC ---
-        });
+                  ewSellBody.appendChild(tr);
+                  if (Number.isFinite(stock.totalValue)) totalSellValue += stock.totalValue;
+                });
+                const totalTr = document.createElement('tr');
+                totalTr.style.fontWeight = 'bold';
+                totalTr.style.borderTop = '2px solid #d1d5db';
+                totalTr.innerHTML = `<td colspan="3">Valor Total a Vender</td><td class="num" id="ewSellTotalValue">${fmtBRL(totalSellValue)}</td><td></td>`;
+                ewSellBody.appendChild(totalTr);
+                updateSellTotal();
+              } else {
+                ewSellHeader.style.display = 'none';
+                ewSellBodyWrap.style.display = 'none';
+              }
+              // --- END OF SELL PLAN LOGIC ---
+    
+              // If the compare view is active, refresh it as well to keep it in sync.
+              if (ewSellAction.value === 'comparar') {
+                await populateCompareTable();
+              }
+            } catch (e) {
+              console.error('[recompute] Erro fatal dentro do callback de fetchTopNFromAPI:', e);
+              ewBody.innerHTML = `<tr><td colspan="11" style="text-align: center; padding: 20px; color: #c62828;">Ocorreu um erro inesperado ao processar o plano. Verifique o console para detalhes.</td></tr>`;
+            }
+          });
+        } catch (e) {
+          console.error('[recompute] Erro fatal dentro do callback de chrome.storage.local.get:', e);
+          ewBody.innerHTML = `<tr><td colspan="11" style="text-align: center; padding: 20px; color: #c62828;">Ocorreu um erro inesperado ao ler os dados da carteira. Verifique o console para detalhes.</td></tr>`;
+        }
       });
     }
 
@@ -2877,6 +3800,44 @@
       recompute();
     });
 
+    ewSellAction.addEventListener('change', () => {
+      try {
+        const action = ewSellAction.value;
+        console.log('[ewSellAction] === EVENTO CHANGE DISPARADO ===');
+        console.log('[ewSellAction] Valor selecionado:', action);
+        
+        if (action === 'vender') {
+          console.log('[ewSellAction] Mostrando tabela de venda');
+          ewSellTable.style.display = 'block';
+          ewCompareTable.style.display = 'none';
+          // Clear compare table
+          if (ewCompareBody) {
+            ewCompareBody.innerHTML = '';
+            console.log('[ewSellAction] Tabela de comparação limpa');
+          }
+        } else if (action === 'comparar') {
+          console.log('[ewSellAction] Mostrando tabela de comparação');
+          ewSellTable.style.display = 'none';
+          ewCompareTable.style.display = 'block';
+          
+          // Clear and repopulate compare table
+          if (ewCompareBody) {
+            ewCompareBody.innerHTML = '';
+            console.log('[ewSellAction] Tabela limpa, chamando populateCompareTable()...');
+            populateCompareTable();
+            console.log('[ewSellAction] populateCompareTable() concluída');
+          } else {
+            console.error('[ewSellAction] ERROR: ewCompareBody é null!');
+          }
+        } else {
+          console.warn('[ewSellAction] Valor inválido:', action);
+        }
+      } catch (changeError) {
+        console.error('[ewSellAction] Erro no handler de change:', changeError);
+        console.error('[ewSellAction] Stack trace:', changeError.stack);
+      }
+    });
+
     ewSellToggle.addEventListener('click', async () => {
       const nowCollapsed = ewSellBodyWrap.style.display !== 'none' ? true : false;
       applySellCollapseState(nowCollapsed);
@@ -2893,6 +3854,7 @@
           if (tr) {
             tr.classList.toggle('row-sell-selected', e.target.checked);
           }
+          saveSelectedSellTickers();
           updateSellTotal();
         }
       });
@@ -2908,6 +3870,7 @@
           const tr = chk.closest('tr');
           if (tr) tr.classList.toggle('row-sell-selected', isChecked);
         });
+        saveSelectedSellTickers();
         updateSellTotal();
       });
     }
@@ -3042,15 +4005,46 @@
           // Find the "AÇÕES" group to use as a context for reading holdings
           let acoesGroup = null;
           const groups = document.querySelectorAll('li.group');
+          console.log(`[Update My Stocks] Found ${groups.length} groups on page`);
+          
           for (const group of groups) {
             const h3 = group.querySelector('h3');
-            if (h3 && (h3.textContent || '').trim().toUpperCase() === 'AÇÕES') {
+            const h3Text = h3 ? h3.textContent.trim().toUpperCase() : 'NO H3';
+            console.log(`[Update My Stocks] Group H3 text: "${h3Text}"`);
+            
+            if (h3 && h3Text === 'AÇÕES') {
               acoesGroup = group;
+              console.log('[Update My Stocks] Found AÇÕES group!');
               break;
             }
           }
+          
+          if (!acoesGroup) {
+            console.error('[Update My Stocks] AÇÕES group not found! Available groups:', 
+              Array.from(groups).map(g => {
+                const h3 = g.querySelector('h3');
+                return h3 ? h3.textContent.trim() : 'NO H3';
+              }));
+            ewUpdateMyStocks.disabled = false;
+            ewUpdateMyStocks.textContent = originalText;
+            alert('Não foi possível encontrar a seção AÇÕES na página. Certifique-se de estar na página de carteira.');
+            return;
+          }
 
+          console.log('[Update My Stocks] Reading holdings from AÇÕES group...');
           const holdings = readHoldingsFromPage(acoesGroup); // Pass only the 'Ações' group context
+          
+          console.log('[Update My Stocks] Holdings read result:', holdings);
+          console.log('[Update My Stocks] Number of holdings found:', Object.keys(holdings).length);
+          
+          if (!holdings || Object.keys(holdings).length === 0) {
+            console.error('[Update My Stocks] No holdings found! Cannot save empty data.');
+            ewUpdateMyStocks.disabled = false;
+            ewUpdateMyStocks.textContent = originalText;
+            alert('Nenhum ativo foi encontrado na carteira. Certifique-se de que a página carregou completamente e que você possui ativos.');
+            return;
+          }
+          
           chrome.storage.local.set({ my_portfolio_holdings: holdings }, () => {
             if (chrome.runtime.lastError) {
               console.error('[StatusInvest Ext] Erro ao salvar no cache (contexto invalidado?):', chrome.runtime.lastError.message);
