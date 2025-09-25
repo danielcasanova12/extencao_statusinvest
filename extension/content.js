@@ -1350,6 +1350,10 @@ function readHoldingsFromPage(rootEl) {
         .card { width: 100%; background: #fff; color: #1f2937; border: 1px solid #e5e7eb; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; margin: 12px 0; }      
         .header { display:flex; align-items:center; justify-content:space-between; padding: 10px 12px; border-bottom: 1px solid #f3f4f6; background:#03ab95; color: white; border-top-left-radius:10px; border-top-right-radius:10px; }
         .title { font-weight: 700; font-size: 14px; margin: 0; color: white; }
+        button { margin-left: 8px; padding:6px 10px; border:1px solid #d1d5db; background:#e6f7f5; color:#028a7a; border-radius:6px; font-size:12px; cursor:pointer; font-weight:600; }
+        button:hover { background:#d1f2eb; }
+        #togglePortfolioPanel { background:#6b7280; color:#fff; border-color:#6b7280; }
+        #togglePortfolioPanel:hover { background:#4b5563; }
         .body { padding: 10px 12px; }
         .allocation-table { width:100%; border-collapse:collapse; font-size:12px; margin-top:8px; }
         .allocation-table th, .allocation-table td { padding:8px 10px; border:1px solid #e5e7eb; text-align:left; }
@@ -1381,9 +1385,12 @@ function readHoldingsFromPage(rootEl) {
       <div class="card" part="card">
         <div class="header">
           <h3 class="title">Distribuição da Carteira por Classe</h3>
-          <button id="refreshPortfolio">↻ Atualizar</button>
+          <div style="display:flex; gap:8px;">
+            <button id="togglePortfolioPanel" style="background:#6b7280; font-size:12px; padding:4px 8px;">🔽 Ocultar</button>
+            <button id="refreshPortfolio">↻ Atualizar</button>
+          </div>
         </div>
-        <div class="body">
+        <div class="body" id="portfolioBody">
           <div class="summary-row">
             <div class="summary-item">
               <div class="summary-value" id="totalValue">R$ 0,00</div>
@@ -1403,6 +1410,16 @@ function readHoldingsFromPage(rootEl) {
             <button id="editTableBtn" class="edit-btn">✏️ Editar</button>
             <button id="saveTableBtn" class="save-btn" style="display:none;">💾 Salvar</button>
             <button id="addNewRow" class="add-row-btn" style="display:none;">➕ Incluir Nova Classe</button>
+          </div>
+          
+          <div class="investment-calculator" style="margin:15px 0; padding:15px; background:#f8fafc; border-radius:8px; border:1px solid #e5e7eb;">
+            <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
+              <label style="font-weight:600; color:#374151;">💰 Valor para Investir:</label>
+              <input type="text" id="investmentAmount" placeholder="R$ 0,00" style="padding:8px 12px; border:1px solid #d1d5db; border-radius:6px; font-size:14px; width:150px;">
+              <button id="calculateAllocation" style="background:#03ab95; color:#fff; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-weight:600;">📊 Calcular Alocação</button>
+              <button id="clearAllocation" style="background:#6b7280; color:#fff; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-weight:600;">🗑️ Limpar</button>
+            </div>
+            <div id="allocationSummary" style="display:none; font-size:12px; color:#6b7280; margin-top:8px;"></div>
           </div>
           
           <div id="distributionContent">
@@ -2026,6 +2043,7 @@ function readHoldingsFromPage(rootEl) {
                 <th style="text-align:right;">% Atual</th>
                 <th style="text-align:right;">% Meta</th>
                 <th style="text-align:right;">Diferença</th>
+                <th style="text-align:right;">Valor a Investir</th>
                 ${isEditMode ? '<th style="text-align:center;">Ações</th>' : ''}
               </tr>
             </thead>
@@ -2064,6 +2082,7 @@ function readHoldingsFromPage(rootEl) {
                 }
               </td>
               <td class="number" style="color:${diffColor};">${diffIcon} ${Math.abs(difference).toFixed(1)}%</td>
+              <td id="allocation-${className.replace(/\s+/g, '-')}" class="number allocation-cell" style="color:#03ab95; font-weight:600;">-</td>
               ${isEditMode ? `<td style="text-align:center;">
                 ${isCustom ? `<button class="remove-row-btn" data-class="${className}">🗑️</button>` : '-'}
               </td>` : ''}
@@ -2086,6 +2105,7 @@ function readHoldingsFromPage(rootEl) {
             <td id="total-diff" class="number" style="color:${Math.abs(100 - totalTargetPercentage) <= 1 ? '#6b7280' : '#dc2626'};">
               ${Math.abs(100 - totalTargetPercentage) <= 1 ? '✓' : '⚠️'} ${Math.abs(100 - totalTargetPercentage).toFixed(1)}%
             </td>
+            <td id="total-allocation" class="number" style="color:#03ab95; font-weight:600;">-</td>
             ${isEditMode ? '<td>-</td>' : ''}
           </tr>
         `;
@@ -2143,6 +2163,10 @@ function readHoldingsFromPage(rootEl) {
     $('#addNewRow').addEventListener('click', addNewAllocationRow);
     $('#editTableBtn').addEventListener('click', toggleEditMode);
     $('#saveTableBtn').addEventListener('click', saveTableChanges);
+    $('#calculateAllocation').addEventListener('click', calculateInvestmentAllocation);
+    $('#clearAllocation').addEventListener('click', clearAllocationValues);
+    $('#investmentAmount').addEventListener('input', formatInvestmentInput);
+    $('#togglePortfolioPanel').addEventListener('click', togglePortfolioPanel);
 
     // Add new allocation row (modified for edit mode)
     async function addNewAllocationRow() {
@@ -2293,6 +2317,205 @@ function readHoldingsFromPage(rootEl) {
       }
     }
 
+    // Investment calculator functions
+    function formatInvestmentInput(e) {
+      let value = e.target.value.replace(/[^\d,]/g, '');
+      if (value) {
+        // Convert comma to dot for parsing
+        let numValue = parseFloat(value.replace(',', '.'));
+        if (!isNaN(numValue)) {
+          e.target.value = `R$ ${numValue.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        }
+      }
+    }
+
+    function parseInvestmentAmount() {
+      const input = $('#investmentAmount');
+      if (!input || !input.value) return 0;
+      
+      // Remove currency formatting and parse
+      const cleanValue = input.value.replace(/[R$\s.]/g, '').replace(',', '.');
+      return parseFloat(cleanValue) || 0;
+    }
+
+    async function calculateInvestmentAllocation() {
+      try {
+        const investmentAmount = parseInvestmentAmount();
+        if (investmentAmount <= 0) {
+          alert('Por favor, insira um valor válido para investir.');
+          return;
+        }
+
+        console.log('Calculating allocation for investment:', investmentAmount);
+
+        // Get current portfolio data
+        const portfolioTotals = await chrome.storage.local.get(['portfolio_totals_by_class']);
+        const distribution = portfolioTotals.portfolio_totals_by_class || {};
+        
+        // Get allocation targets
+        const allocationData = await getAllocationData();
+        
+        // Calculate current total value
+        let currentTotalValue = 0;
+        Object.values(distribution).forEach(data => {
+          currentTotalValue += data.value || 0;
+        });
+
+        // Calculate future total (current + investment)
+        const futureTotalValue = currentTotalValue + investmentAmount;
+        
+        // Calculate optimal allocation for each class
+        const allocations = {};
+        let totalAllocated = 0;
+        
+        // First pass: calculate ideal allocation amounts
+        Object.entries(allocationData).forEach(([className, data]) => {
+          const targetPercentage = data.target || 0;
+          const currentValue = distribution[className]?.value || 0;
+          
+          // Calculate target value after investment
+          const targetValue = futureTotalValue * (targetPercentage / 100);
+          
+          // Calculate how much to invest in this class
+          const neededInvestment = Math.max(0, targetValue - currentValue);
+          
+          allocations[className] = {
+            current: currentValue,
+            target: targetValue,
+            needed: neededInvestment,
+            percentage: targetPercentage
+          };
+          
+          totalAllocated += neededInvestment;
+        });
+
+        // Adjust allocations if total exceeds investment amount
+        if (totalAllocated > investmentAmount) {
+          // Scale down proportionally
+          const scaleFactor = investmentAmount / totalAllocated;
+          Object.keys(allocations).forEach(className => {
+            allocations[className].needed *= scaleFactor;
+          });
+        } else if (totalAllocated < investmentAmount) {
+          // Distribute remaining amount proportionally by target percentage
+          const remaining = investmentAmount - totalAllocated;
+          const totalTargetPercentage = Object.values(allocationData).reduce((sum, data) => sum + (data.target || 0), 0);
+          
+          if (totalTargetPercentage > 0) {
+            Object.entries(allocationData).forEach(([className, data]) => {
+              const weight = (data.target || 0) / totalTargetPercentage;
+              allocations[className].needed += remaining * weight;
+            });
+          }
+        }
+
+        // Update the table with allocation recommendations
+        updateAllocationDisplay(allocations, investmentAmount);
+        
+        // Show summary
+        showAllocationSummary(allocations, investmentAmount, futureTotalValue);
+
+      } catch (error) {
+        console.error('Error calculating investment allocation:', error);
+        alert('Erro ao calcular alocação. Tente novamente.');
+      }
+    }
+
+    function updateAllocationDisplay(allocations, totalInvestment) {
+      Object.entries(allocations).forEach(([className, data]) => {
+        const cellId = `allocation-${className.replace(/\s+/g, '-')}`;
+        const cell = $(`#${cellId}`);
+        if (cell && data.needed > 0) {
+          cell.textContent = formatCurrency(data.needed);
+          cell.style.color = '#03ab95';
+          cell.style.fontWeight = '600';
+        } else if (cell) {
+          cell.textContent = '-';
+          cell.style.color = '#6b7280';
+        }
+      });
+
+      // Update total allocation
+      const totalCell = $('#total-allocation');
+      if (totalCell) {
+        totalCell.textContent = formatCurrency(totalInvestment);
+        totalCell.style.color = '#03ab95';
+        totalCell.style.fontWeight = '600';
+      }
+    }
+
+    function showAllocationSummary(allocations, totalInvestment, futureTotalValue) {
+      const summaryDiv = $('#allocationSummary');
+      if (!summaryDiv) return;
+
+      let summary = `💡 <strong>Recomendação para ${formatCurrency(totalInvestment)}:</strong><br>`;
+      
+      const sortedAllocations = Object.entries(allocations)
+        .filter(([_, data]) => data.needed > 0)
+        .sort(([_, a], [__, b]) => b.needed - a.needed);
+
+      if (sortedAllocations.length > 0) {
+        sortedAllocations.forEach(([className, data]) => {
+          const percentage = (data.needed / totalInvestment) * 100;
+          summary += `• ${className}: ${formatCurrency(data.needed)} (${percentage.toFixed(1)}%)<br>`;
+        });
+      } else {
+        summary += '✓ Sua carteira já está bem balanceada conforme suas metas!';
+      }
+
+      summaryDiv.innerHTML = summary;
+      summaryDiv.style.display = 'block';
+    }
+
+    function clearAllocationValues() {
+      // Clear investment input
+      const input = $('#investmentAmount');
+      if (input) input.value = '';
+
+      // Clear all allocation cells
+      const allocationCells = document.querySelectorAll('.allocation-cell');
+      allocationCells.forEach(cell => {
+        cell.textContent = '-';
+        cell.style.color = '#6b7280';
+        cell.style.fontWeight = 'normal';
+      });
+
+      // Clear total allocation
+      const totalCell = $('#total-allocation');
+      if (totalCell) {
+        totalCell.textContent = '-';
+        totalCell.style.color = '#03ab95';
+      }
+
+      // Hide summary
+      const summaryDiv = $('#allocationSummary');
+      if (summaryDiv) {
+        summaryDiv.style.display = 'none';
+      }
+    }
+
+    // Toggle portfolio panel visibility
+    function togglePortfolioPanel() {
+      const body = $('#portfolioBody');
+      const toggleBtn = $('#togglePortfolioPanel');
+      
+      if (!body || !toggleBtn) return;
+      
+      const isHidden = body.style.display === 'none';
+      
+      if (isHidden) {
+        // Show panel
+        body.style.display = 'block';
+        toggleBtn.innerHTML = '🔽 Ocultar';
+        toggleBtn.style.background = '#6b7280';
+      } else {
+        // Hide panel
+        body.style.display = 'none';
+        toggleBtn.innerHTML = '🔼 Mostrar';
+        toggleBtn.style.background = '#03ab95';
+      }
+    }
+
     // Initial load
     setTimeout(updatePortfolioDistribution, 1000);
   }
@@ -2331,6 +2554,8 @@ function readHoldingsFromPage(rootEl) {
         button { padding:6px 10px; border:1px solid #d1d5db; background:#03ab95; color:#fff; border-radius:6px; font-size:12px; cursor:pointer; }
         button.secondary { background:#e6f7f5; color:#028a7a; border-color:#beebe4; }
         button.danger { background:#fee2e2; color:#991b1b; border-color:#fecaca; }
+        #toggleRebalancePanel { background:#6b7280; color:#fff; border-color:#6b7280; }
+        #toggleRebalancePanel:hover { background:#4b5563; }
         .table-wrap { max-height: 260px; overflow:auto; border-top:1px solid #f3f4f6; margin-top:8px; }
         table { width:100%; border-collapse:collapse; font-size:12px; }
         thead th { position: sticky; top: 0; background:#e6f7f5; z-index:1; text-align:left; padding:6px 8px; border-bottom:1px solid #beebe4; font-weight: 600; color: #028a7a; }
@@ -2350,8 +2575,11 @@ function readHoldingsFromPage(rootEl) {
         .row-late td.next, .row-late td.status { color:#c62828; font-weight:700; }
       </style>
       <div class="card" part="card">
-        <div class="header"><h3 class="title">Quando foi o último rebalanceamento?</h3></div>
-        <div class="body">
+        <div class="header">
+          <h3 class="title">Quando foi o último rebalanceamento?</h3>
+          <button id="toggleRebalancePanel" style="background:#6b7280; color:#fff; border-color:#6b7280; font-size:12px; padding:4px 8px;">🔽 Ocultar</button>
+        </div>
+        <div class="body" id="rebalanceBody">
           <div class="row">
             <div style="flex: 1;">
               <label for="lastRebDate">Último rebalance</label>
@@ -2611,6 +2839,28 @@ function readHoldingsFromPage(rootEl) {
         refresh();
       });
     }
+    
+    // Toggle rebalance panel visibility
+    const toggleRebalanceBtn = $('#toggleRebalancePanel');
+    if (toggleRebalanceBtn) {
+      toggleRebalanceBtn.addEventListener('click', () => {
+        const body = $('#rebalanceBody');
+        if (!body) return;
+        
+        const isHidden = body.style.display === 'none';
+        
+        if (isHidden) {
+          body.style.display = 'block';
+          toggleRebalanceBtn.innerHTML = '🔽 Ocultar';
+          toggleRebalanceBtn.style.background = '#6b7280';
+        } else {
+          body.style.display = 'none';
+          toggleRebalanceBtn.innerHTML = '🔼 Mostrar';
+          toggleRebalanceBtn.style.background = '#03ab95';
+        }
+      });
+    }
+    
     // Sem campo de data atual; usa sempre hoje
     listBody.addEventListener('click', async (ev) => {
       const btn = ev.target;
