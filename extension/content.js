@@ -61,178 +61,226 @@ function classifyAsset(ticker) {
   
   ticker = ticker.toUpperCase();
   
-  // FIIs (Real Estate Investment Funds)
-  if (ticker.endsWith('11')) return 'FIIs';
+  // FI-Infra (Infrastructure funds - specific patterns)
+  if (ticker.match(/INFRA|IFIE|IFID|RCFF|GGRC11|GTWR11|HCRI11|KNCR11|TGAR11|RNEW11|RZTR11|FEXC11/)) {
+    return 'FI-Infra';
+  }
   
-  // ETFs
-  if (ticker.match(/^[A-Z]{4}11$/) && ['IVVB', 'BOVA', 'SMAL', 'PIBB'].some(etf => ticker.startsWith(etf))) return 'ETFs';
+  // FIAGRO (Agriculture funds - specific patterns)
+  if (ticker.match(/AGRO|FIAG|TGAR|RECR|GAIA11|GTWR11|HCTR11|GGRC11|FIAG11|RZAG11|SOJA11/)) {
+    return 'FIAGRO';
+  }
   
-  // US stocks (common patterns)
-  if (ticker.length <= 5 && !ticker.match(/^\d/) && !ticker.endsWith('11')) return 'EUA';
+  // ETFs nacionais (Brazilian ETFs)
+  if (ticker.match(/^(BOVA|SMAL|IVVB|SPXI|BRAX|XINA|PIBB|ISUS|IMAB|IFIX|DIVO|FIND|MATB|ECOO|GOVE|BOVX|ACWI|GOLD|HASH|NASD|WRLD|ESGB|USTK|XMAL|XFIX)11$/)) {
+    return 'ETF';
+  }
   
-  // Default to Brazilian stocks
+  // ETFs exteriores e BDRs de ETFs
+  if (ticker.match(/^(VTI|SPY|QQQ|IVV|VOO|EWZ|IVVB|ACWI|GOLD|GLD|SLV)3[45]$/) || 
+      ticker.match(/^[A-Z]{3,4}3[45]$/)) {
+    return 'ETF Exterior';
+  }
+  
+  // FIIs (Real Estate Investment Funds) - terminam com 11 e não são ETFs
+  if (ticker.endsWith('11') && !ticker.match(/^(BOVA|SMAL|IVVB|SPXI|BRAX|XINA|PIBB|ISUS|IMAB|IFIX|DIVO|FIND|MATB|ECOO|GOVE|BOVX|ACWI|GOLD|HASH|NASD|WRLD|ESGB|USTK|XMAL|XFIX)/)) {
+    return 'FIIs';
+  }
+  
+  // BDRs (Brazilian Depositary Receipts) - terminam com 34 ou 35
+  if (ticker.match(/3[45]$/)) {
+    return 'ETF Exterior'; // Classificamos BDRs como ETF Exterior para simplificar
+  }
+  
+  // Default to Brazilian stocks (Ações)
   return 'Ações';
 }
 
-function collectPortfolioTotals() {
-  const categoryMappings = {
-    1: 'acoes',      // Ações
-    2: 'fiis',       // FIIs
-    6: 'etfs',       // ETFs
-    22: 'fiis',      // More FIIs (different category)
-    24: 'fiis',      // More FIIs (another category)
-    901: 'exterior'  // International assets
-  };
+function showLoadingOverlay(message = 'Aguarde, processando...') {
+  const overlayId = 'fm-loading-overlay';
+  if (document.getElementById(overlayId)) return;
 
-  const totals = {
-    acoes: 0,
-    fiis: 0,
-    etfs: 0,
-    exterior: 0
-  };
+  const overlay = document.createElement('div');
+  overlay.id = overlayId;
+  Object.assign(overlay.style, {
+    position: 'fixed',
+    top: '0',
+    left: '0',
+    width: '100%',
+    height: '100%',
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    color: 'white',
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'center',
+    fontSize: '22px',
+    fontWeight: '600',
+    zIndex: '10001', // Higher z-index
+    cursor: 'wait'
+  });
+  overlay.textContent = message;
+  document.body.appendChild(overlay);
+}
 
-  // Find all category headers and their corresponding total values
-  console.log('[Portfolio Totals] Starting collection with category mappings:', categoryMappings);
-  
-  Object.keys(categoryMappings).forEach(categoryCode => {
-    try {
-      // Find headers with the category class
-      const selector = `h3.text-category-${categoryCode}`;
-      const headers = document.querySelectorAll(selector);
-      console.log(`[Portfolio Totals] Found ${headers.length} headers for selector: ${selector}`);
+function hideLoadingOverlay() { try { document.getElementById('fm-loading-overlay')?.remove(); } catch {} }
+
+
+
+function collectPortfolioDataNow(totals) {
+  try {
+    // First, ensure ALL pagination selectors are set to "TODOS"
+    const allPaginationSelects = document.querySelectorAll('select[data-formselect]');
+    console.log(`[Portfolio Totals] Found ${allPaginationSelects.length} pagination selectors`);
+    
+    allPaginationSelects.forEach((select, idx) => {
+      const currentValue = select.value;
+      const todosOption = select.querySelector('option[value="-1"]');
       
-      headers.forEach((header, index) => {
-        console.log(`[Portfolio Totals] Processing header ${index + 1} for category ${categoryCode}`);
-        try {
-          // Find the parent collapsible header
-          const collapsibleHeader = header.closest('header.collapsible-header');
-          if (!collapsibleHeader) {
-            console.warn(`[Portfolio Totals] No collapsible header found for category ${categoryCode}`);
-            return;
-          }
+      console.log(`[Portfolio Totals] Pagination ${idx} - ID: ${select.id}, Current: ${currentValue}, Has TODOS option: ${!!todosOption}`);
+      
+      if (todosOption && currentValue !== '-1') {
+        console.log(`[Portfolio Totals] Setting pagination ${idx} to TODOS`);
+        select.value = '-1';
+        todosOption.selected = true;
+        
+        // Trigger multiple events to ensure the change is recognized
+        const changeEvent = new Event('change', { bubbles: true });
+        const inputEvent = new Event('input', { bubbles: true });
+        select.dispatchEvent(changeEvent);
+        select.dispatchEvent(inputEvent);
+        
+        // Also try clicking the option
+        todosOption.click();
+      }
+    });
 
-          // Find the collapsible body (where the value is displayed)
-          const collapsibleBody = collapsibleHeader.nextElementSibling;
-          if (!collapsibleBody || !collapsibleBody.classList.contains('collapsible-body')) {
-            console.warn(`[Portfolio Totals] No collapsible body found for category ${categoryCode}`);
-            return;
+    // Also handle the visual dropdown selectors
+    const dropdownInputs = document.querySelectorAll('.select-dropdown');
+    console.log(`[Portfolio Totals] Found ${dropdownInputs.length} visual dropdown inputs`);
+    
+    dropdownInputs.forEach((input, idx) => {
+      const currentValue = input.value;
+      console.log(`[Portfolio Totals] Dropdown ${idx} current value: "${currentValue}"`);
+      
+      if (currentValue !== 'TODOS') {
+        console.log(`[Portfolio Totals] Setting visual dropdown ${idx} to TODOS`);
+        input.value = 'TODOS';
+        
+        // Try to trigger the underlying select change
+        const parentWrapper = input.closest('.select-wrapper');
+        if (parentWrapper) {
+          const hiddenSelect = parentWrapper.querySelector('select');
+          if (hiddenSelect) {
+            hiddenSelect.value = '-1';
+            const changeEvent = new Event('change', { bubbles: true });
+            hiddenSelect.dispatchEvent(changeEvent);
           }
+        }
+      }
+    });
 
-          // Look for percentage line in the collapsible body
-          const percentageLine = collapsibleBody.querySelector('div.d-flex.justify-content-between, .d-flex.justify-content-between');
-          if (!percentageLine) {
-            console.warn(`[Portfolio Totals] No percentage line found for category ${categoryCode}`);
-            return;
-          }
+        // Wait a bit for pagination to apply, then collect data
+        setTimeout(() => {
+          // Find all category headers and extract their values
+          const categoryHeaders = document.querySelectorAll('ul.collapsible li.group header.collapsible-header');
+          console.log(`[Portfolio Totals] Found ${categoryHeaders.length} category headers`);
 
-          // Find value container - try multiple selectors
-          let valueContainer = null;
-          const possibleSelectors = [
-            '.d-flex.flex-column.align-items-end',
-            '.text-right',
-            '.align-items-end',
-            '[class*="align-items-end"]'
-          ];
-          
-          for (const sel of possibleSelectors) {
-            valueContainer = percentageLine.querySelector(sel);
-            if (valueContainer) {
-              console.log(`[Portfolio Totals] Found value container using selector: ${sel}`);
-              break;
-            }
-          }
-
-          if (!valueContainer) {
-            // Try finding by text content pattern
-            const allDivs = percentageLine.querySelectorAll('div');
-            for (const div of allDivs) {
-              const textContent = div.textContent?.trim();
-              if (textContent && /R\$\s*[\d.,]+/.test(textContent)) {
-                valueContainer = div;
-                console.log(`[Portfolio Totals] Found value container by text pattern: "${textContent}"`);
-                break;
+          categoryHeaders.forEach((header, index) => {
+            try {
+              // Find the category title (h3 element)
+              const titleElement = header.querySelector('h3');
+              if (!titleElement) {
+                console.log(`[Portfolio Totals] No h3 title found in header ${index}`);
+                return;
               }
-            }
 
-            if (!valueContainer) {
-              // Last resort: search in the entire line
-              valueContainer = percentageLine;
-            }
-          }
+              const categoryName = titleElement.textContent.trim();
+              console.log(`[Portfolio Totals] Processing category: "${categoryName}"`);
 
-          if (!valueContainer) {
-            console.warn(`[Portfolio Totals] No value container found for category ${categoryCode}`);
-            console.log(`[Portfolio Totals] Available elements in percentage line:`, percentageLine.innerHTML.substring(0, 200) + '...');
-            return;
-          }
+              // Skip if this category is not in our tracking list
+              if (!totals.hasOwnProperty(categoryName)) {
+                console.log(`[Portfolio Totals] Skipping untracked category: "${categoryName}"`);
+                return;
+              }
 
-          // Find the span with the actual value
-          let valueSpan = valueContainer.querySelector('span.sensitive-field.fw-600');
-          if (!valueSpan) {
-            // Try alternative selectors
-            valueSpan = valueContainer.querySelector('span.sensitive-field');
-            if (!valueSpan) {
-              valueSpan = valueContainer.querySelector('span.fw-600');
+              // Find the value in the right section of the header
+              // Based on your HTML, look for the pattern: .line > div > div > small > span.sensitive-field.fw-600
+              const lineSection = header.querySelector('.line');
+              if (!lineSection) {
+                console.log(`[Portfolio Totals] No line section found for ${categoryName}`);
+                return;
+              }
+
+              // Try multiple specific selectors based on the HTML structure you provided
+              let valueSpan = null;
+              
+              // Primary selector - exact match from HTML
+              valueSpan = lineSection.querySelector('small span.sensitive-field.fw-600');
+              
               if (!valueSpan) {
-                valueSpan = valueContainer.querySelector('span[class*="sensitive"]');
-                if (!valueSpan) {
-                  // Try any span with numeric content that looks like currency
-                  const allSpans = valueContainer.querySelectorAll('span');
-                  for (const span of allSpans) {
-                    const text = span.textContent?.trim();
-                    // Skip spans with non-numeric words like "ativos", "item", etc
-                    if (text && /\d+[.,]\d+/.test(text) && 
-                        !text.toLowerCase().includes('ativo') &&
-                        !text.toLowerCase().includes('item') &&
-                        !/^[a-zA-Z]+$/.test(text)) {
+                // Fallback selectors
+                valueSpan = lineSection.querySelector('span.sensitive-field.fw-600');
+              }
+              
+              if (!valueSpan) {
+                valueSpan = lineSection.querySelector('span.sensitive-field');
+              }
+              
+              if (!valueSpan) {
+                // Look for any span in small element that contains numbers
+                const smallElements = lineSection.querySelectorAll('small');
+                for (const small of smallElements) {
+                  const spans = small.querySelectorAll('span');
+                  for (const span of spans) {
+                    const text = span.textContent.trim();
+                    if (text && /\d+[\.,]\d+/.test(text)) {
                       valueSpan = span;
-                      console.log(`[Portfolio Totals] Found numeric span: "${text}"`);
                       break;
                     }
                   }
+                  if (valueSpan) break;
                 }
               }
+
+              if (!valueSpan) {
+                console.log(`[Portfolio Totals] No value span found for ${categoryName}`);
+                // Log more structure for debugging
+                const smallElements = lineSection.querySelectorAll('small');
+                console.log(`[Portfolio Totals] Found ${smallElements.length} small elements in line section`);
+                smallElements.forEach((small, idx) => {
+                  console.log(`[Portfolio Totals] Small ${idx}:`, small.textContent.trim());
+                });
+                return;
+              }
+
+              const valueText = valueSpan.textContent.trim();
+              console.log(`[Portfolio Totals] ${categoryName}: Raw value = "${valueText}"`);
+
+              // Parse the value (it should be in format like "12.069,30")
+              const value = parseBRLValue(`R$ ${valueText}`);
+              console.log(`[Portfolio Totals] ${categoryName}: Parsed value = ${value}`);
+
+              if (value > 0) {
+                totals[categoryName] = value;
+                console.log(`[Portfolio Totals] ✓ ${categoryName}: ${valueText} -> R$ ${value.toFixed(2)}`);
+              }
+
+            } catch (error) {
+              console.error(`[Portfolio Totals] Error processing header ${index}:`, error);
             }
-          }
+          });
 
-          if (!valueSpan) {
-            console.warn(`[Portfolio Totals] No value span found for category ${categoryCode}`);
-            console.log(`[Portfolio Totals] Available spans in value container:`, 
-              Array.from(valueContainer.querySelectorAll('span')).map(s => s.className + ': ' + s.textContent).join(', '));
-            return;
-          }
-
-          const valueText = valueSpan.textContent?.trim();
-          console.log(`[Portfolio Totals] Category ${categoryCode}: Raw value text = "${valueText}"`);
-
-          if (valueText) {
-            // Don't add R$ prefix if the text already contains non-numeric content
-            let textToParse = valueText;
-            if (!/[a-zA-Z]/.test(valueText)) {
-              // Only add R$ prefix if it's purely numeric (with possible , . - formatting)
-              textToParse = 'R$ ' + valueText;
-            }
-            
-            const value = parseBRLValue(textToParse);
-            console.log(`[Portfolio Totals] Category ${categoryCode}: Parsed value = ${value} (from "${valueText}")`);
-
-            if (value > 0) {
-              const categoryKey = categoryMappings[categoryCode];
-              totals[categoryKey] += value;
-              console.log(`[Portfolio Totals] ✓ Category ${categoryCode} (${categoryKey}): ${textToParse} -> ${value}`);
-            }
-          }
-        } catch (headerError) {
-          console.error(`[Portfolio Totals] Error processing header for category ${categoryCode}:`, headerError);
-        }
-      });
-    } catch (categoryError) {
-      console.error(`[Portfolio Totals] Error processing category ${categoryCode}:`, categoryError);
-    }
-  });
-
-  console.log('[Portfolio Totals] Final totals:', totals);
-  return totals;
+          // Save the updated totals
+          console.log('[Portfolio Totals] Final collected totals:', totals);
+          savePortfolioTotalsToCache(totals);
+          
+        }, 1500); // Wait for pagination changes to apply
+        
+    console.log('[Portfolio Totals] Pagination setup completed, data collection scheduled');
+    
+  } catch (error) {
+    console.error('[Portfolio Totals] Error in data collection:', error);
+  }
 }
 
 function savePortfolioTotalsToCache(totals) {
@@ -247,6 +295,118 @@ function savePortfolioTotalsToCache(totals) {
   } catch (error) {
     console.error('[Portfolio Totals] Error saving totals to cache:', error);
   }
+}
+
+function saveHoldingsByClassToCache(holdingsByClass) {
+  try {
+    const timestamp = new Date().toISOString();
+    const dataWithTimestamp = {
+      ...holdingsByClass,
+      lastUpdated: timestamp
+    };
+    
+    chrome.storage.local.set({ my_portfolio_holdings_by_class: dataWithTimestamp }, () => {
+      if (chrome.runtime.lastError) {
+        console.error('[Holdings Cache] Error saving holdings by class to cache:', chrome.runtime.lastError.message);
+      } else {
+        console.log('[Holdings Cache] Holdings by class saved to cache at:', timestamp);
+        console.log('[Holdings Cache] Summary:', Object.keys(holdingsByClass).map(cls => `${cls}: ${Object.keys(holdingsByClass[cls]).length} ativos`));
+      }
+    });
+  } catch (error) {
+    console.error('[Holdings Cache] Error saving holdings by class to cache:', error);
+  }
+}
+
+function getHoldingsByClassFromCache(callback) {
+  try {
+    chrome.storage.local.get(['my_portfolio_holdings_by_class'], (result) => {
+      if (chrome.runtime.lastError) {
+        console.error('[Holdings Cache] Error getting holdings by class from cache:', chrome.runtime.lastError.message);
+        callback(null);
+      } else {
+        const holdingsData = result.my_portfolio_holdings_by_class;
+        if (holdingsData) {
+          console.log('[Holdings Cache] Holdings by class retrieved from cache, last updated:', holdingsData.lastUpdated);
+          callback(holdingsData);
+        } else {
+          console.log('[Holdings Cache] No holdings by class found in cache');
+          callback(null);
+        }
+      }
+    });
+  } catch (error) {
+    console.error('[Holdings Cache] Error getting holdings by class from cache:', error);
+    callback(null);
+  }
+}
+
+function getHoldingsStatsByClass(holdingsByClass) {
+  const stats = {};
+  
+  Object.keys(holdingsByClass).forEach(className => {
+    if (className === 'lastUpdated') return; // Skip metadata
+    
+    const holdings = holdingsByClass[className];
+    const assetCount = Object.keys(holdings).length;
+    let totalValue = 0;
+    let totalInvested = 0;
+    
+    Object.values(holdings).forEach(holding => {
+      if (holding.currentValue) {
+        totalValue += holding.currentValue;
+      }
+      if (holding.avgPrice && holding.qty) {
+        totalInvested += holding.avgPrice * holding.qty;
+      }
+    });
+    
+    const profitLoss = totalValue - totalInvested;
+    const profitLossPercentage = totalInvested > 0 ? (profitLoss / totalInvested) * 100 : 0;
+    
+    stats[className] = {
+      assetCount,
+      totalValue,
+      totalInvested,
+      profitLoss,
+      profitLossPercentage,
+      assets: Object.keys(holdings)
+    };
+  });
+  
+  return stats;
+}
+
+function displayHoldingsSummary() {
+  getHoldingsByClassFromCache((holdingsData) => {
+    if (!holdingsData) {
+      console.log('[Holdings Summary] No holdings data available in cache');
+      return;
+    }
+    
+    console.log('=== RESUMO DOS MEUS ATIVOS POR CLASSE ===');
+    console.log(`Última atualização: ${holdingsData.lastUpdated}`);
+    console.log('');
+    
+    const stats = getHoldingsStatsByClass(holdingsData);
+    let grandTotal = 0;
+    
+    Object.keys(stats).forEach(className => {
+      const classStats = stats[className];
+      grandTotal += classStats.totalValue;
+      
+      console.log(`📊 ${className.toUpperCase()}`);
+      console.log(`   • Ativos: ${classStats.assetCount}`);
+      console.log(`   • Valor Atual: ${formatCurrency(classStats.totalValue)}`);
+      console.log(`   • Valor Investido: ${formatCurrency(classStats.totalInvested)}`);
+      console.log(`   • Resultado: ${formatCurrency(classStats.profitLoss)} (${classStats.profitLossPercentage.toFixed(2)}%)`);
+      console.log(`   • Códigos: ${classStats.assets.join(', ')}`);
+      console.log('');
+    });
+    
+    console.log(`💰 TOTAL GERAL: ${formatCurrency(grandTotal)}`);
+    console.log('=====================================');
+  });
 }
 
 function getPortfolioTotalsFromCache(callback) {
@@ -270,6 +430,14 @@ function readHoldingsFromPage(rootEl) {
   try {
     const scope = rootEl && typeof rootEl.querySelectorAll === 'function' ? rootEl : document;
     const map = Object.create(null);
+    const holdingsByClass = {
+      'Ações': {},
+      'FIIs': {},
+      'ETF': {},
+      'FI-Infra': {},
+      'FIAGRO': {},
+      'ETF Exterior': {}
+    };
     
     console.log('[readHoldingsFromPage] Starting to read holdings from scope:', scope === document ? 'document' : 'rootEl');
     console.log('[readHoldingsFromPage] Scope element:', scope);
@@ -346,8 +514,32 @@ function readHoldingsFromPage(rootEl) {
         }
 
         if (Number.isFinite(price) && Number.isFinite(qty) && qty > 0) {
-          map[code] = { price, qty, avgPrice };
-          console.log(`[readHoldingsFromPage] Row ${index}: ${code} - Price: ${price}, Qty: ${qty}, AvgPrice: ${avgPrice}`);
+          // Classify the asset
+          const assetClass = classifyAsset(code);
+          const currentValue = price * qty;
+          
+          const holdingData = { 
+            price, 
+            currentPrice: price,  // Alias for consistency
+            qty, 
+            avgPrice, 
+            currentValue,
+            assetClass,
+            lastUpdated: new Date().toISOString()
+          };
+          
+          // Add to general map (legacy compatibility)
+          map[code] = holdingData;
+          
+          // Add to classified holdings
+          if (holdingsByClass[assetClass]) {
+            holdingsByClass[assetClass][code] = holdingData;
+          } else {
+            // If classification doesn't match our predefined classes, add to "Ações" as default
+            holdingsByClass['Ações'][code] = holdingData;
+          }
+          
+          console.log(`[readHoldingsFromPage] Row ${index}: ${code} (${assetClass}) - Price: ${price}, Qty: ${qty}, AvgPrice: ${avgPrice}, Value: ${formatCurrency(currentValue)}`);
         } else {
           console.warn(`[readHoldingsFromPage] Row ${index}: Invalid data for ${code} - Price: ${price}, Qty: ${qty}, AvgPrice: ${avgPrice}`);
         }
@@ -356,7 +548,12 @@ function readHoldingsFromPage(rootEl) {
       }
     });
 
+    // Save holdings by class to cache
+    saveHoldingsByClassToCache(holdingsByClass);
+
     console.log(`[readHoldingsFromPage] Successfully processed ${Object.keys(map).length} holdings:`, Object.keys(map));
+    console.log('[readHoldingsFromPage] Holdings by class:', Object.keys(holdingsByClass).map(cls => `${cls}: ${Object.keys(holdingsByClass[cls]).length}`));
+    
     return map;
   } catch (error) {
     console.error('[readHoldingsFromPage] Error reading holdings:', error);
@@ -609,6 +806,114 @@ function readHoldingsFromPage(rootEl) {
       if (Number.isFinite(price) && Number.isFinite(qty)) sum += price * qty;
     }
     return sum;
+  }
+
+  function setAllPaginationsToShowAll() {
+    return new Promise((resolve) => {
+      try {
+        console.log('[setAllPaginationsToShowAll] Starting pagination configuration for all categories...');
+        
+        // Find all category groups
+        const allGroups = document.querySelectorAll('li.group');
+        console.log(`[setAllPaginationsToShowAll] Found ${allGroups.length} category groups`);
+        
+        // Categories we want to process
+        const targetCategories = ['AÇÕES', 'FIIS', 'ETF', 'FI-INFRA', 'FIAGRO', 'ETF EXTERIOR'];
+        let processedGroups = 0;
+        
+        allGroups.forEach((group, groupIndex) => {
+          try {
+            const h3Element = group.querySelector('h3');
+            if (!h3Element) return;
+            
+            const categoryName = h3Element.textContent.trim().toUpperCase();
+            console.log(`[setAllPaginationsToShowAll] Group ${groupIndex}: "${categoryName}"`);
+            
+            // Check if this is one of our target categories
+            if (!targetCategories.includes(categoryName)) {
+              console.log(`[setAllPaginationsToShowAll] Skipping non-target category: "${categoryName}"`);
+              return;
+            }
+            
+            processedGroups++;
+            console.log(`[setAllPaginationsToShowAll] Processing target category: "${categoryName}"`);
+            
+            // Expand the group if it's not active
+            if (!group.classList.contains('active')) {
+              console.log(`[setAllPaginationsToShowAll] Expanding ${categoryName} group`);
+              const header = group.querySelector('.collapsible-header');
+              if (header) {
+                header.click();
+              }
+            }
+            
+            // Find and configure pagination for this group
+            setTimeout(() => {
+              try {
+                const paginationControl = group.querySelector('.pagination-control');
+                if (paginationControl) {
+                  console.log(`[setAllPaginationsToShowAll] Found pagination control for ${categoryName}`);
+                  
+                  // Find the select element within this pagination control
+                  const selectElement = paginationControl.querySelector('select[data-formselect]');
+                  if (selectElement) {
+                    const currentValue = selectElement.value;
+                    console.log(`[setAllPaginationsToShowAll] ${categoryName} - Current value: ${currentValue}`);
+                    
+                    if (currentValue !== '-1') {
+                      console.log(`[setAllPaginationsToShowAll] Setting ${categoryName} pagination to TODOS (-1)`);
+                      selectElement.value = '-1';
+                      
+                      // Find and select the TODOS option
+                      const todosOption = selectElement.querySelector('option[value="-1"]');
+                      if (todosOption) {
+                        todosOption.selected = true;
+                      }
+                      
+                      // Dispatch events to trigger the change
+                      const changeEvent = new Event('change', { bubbles: true });
+                      const inputEvent = new Event('input', { bubbles: true });
+                      selectElement.dispatchEvent(changeEvent);
+                      selectElement.dispatchEvent(inputEvent);
+                      
+                      console.log(`[setAllPaginationsToShowAll] ✓ ${categoryName} pagination set to TODOS`);
+                    } else {
+                      console.log(`[setAllPaginationsToShowAll] ✓ ${categoryName} pagination already set to TODOS`);
+                    }
+                  } else {
+                    console.warn(`[setAllPaginationsToShowAll] No select element found for ${categoryName}`);
+                  }
+                  
+                  // Also handle visual dropdown if present
+                  const visualDropdown = paginationControl.querySelector('.select-dropdown');
+                  if (visualDropdown && visualDropdown.value !== 'TODOS') {
+                    console.log(`[setAllPaginationsToShowAll] Setting visual dropdown for ${categoryName} to TODOS`);
+                    visualDropdown.value = 'TODOS';
+                  }
+                } else {
+                  console.warn(`[setAllPaginationsToShowAll] No pagination control found for ${categoryName}`);
+                }
+              } catch (paginationError) {
+                console.error(`[setAllPaginationsToShowAll] Error configuring pagination for ${categoryName}:`, paginationError);
+              }
+            }, 500 + (groupIndex * 200)); // Stagger the pagination updates
+            
+          } catch (groupError) {
+            console.error(`[setAllPaginationsToShowAll] Error processing group ${groupIndex}:`, groupError);
+          }
+        });
+        
+        // Wait for all pagination changes to be applied
+        setTimeout(() => {
+          console.log(`[setAllPaginationsToShowAll] Completed pagination configuration for ${processedGroups} categories`);
+          resolve();
+        }, 3000); // Give enough time for all groups to be processed
+        
+      } catch (mainError) {
+        console.error('[setAllPaginationsToShowAll] Main error:', mainError);
+        resolve(); // Don't block the process
+      }
+    });
   }
 
   function paintRow(row, portfolioTotal) {
@@ -1019,66 +1324,6 @@ function readHoldingsFromPage(rootEl) {
     return null;
   }
 
-  function setShowAllOnPagination() {
-    return new Promise((resolve, reject) => {
-      try {
-        // 1. Find the "AÇÕES" group.
-        let acoesGroup = null;
-        // Use a more specific selector for the "AÇÕES" header
-        const acoesH3 = document.querySelector('.collapsible-header h3.text-category-1');
-        if (acoesH3) {
-          acoesGroup = acoesH3.closest('li.group');
-        }
-
-        if (!acoesGroup) {
-          console.warn('[StatusInvest Ext] "AÇÕES" group not found. Cannot set pagination to "TODOS".');
-          resolve();
-          return;
-        }
-
-        // 2. Expand it if it's not active.
-        if (!acoesGroup.classList.contains('active')) {
-          const header = acoesGroup.querySelector('.collapsible-header');
-          if (header) header.click();
-        }
-  
-        // 3. Wait for animations and DOM updates.
-        setTimeout(() => {
-          try {
-            // 4. Find the pagination control within the "AÇÕES" group and set it to "TODOS".
-            const control = acoesGroup.querySelector('.pagination-control');
-            if (control) {
-              const selectElement = control.querySelector('select[data-formselect]');
-              // Check if "TODOS" is not already selected. The value for TODOS is -1.
-              if (selectElement && selectElement.value !== '-1') {
-                // This is a Materialize CSS dropdown. We need to find the generated <ul> and click the <li>.
-                const dropdownInput = control.querySelector('input.select-dropdown');
-                if (dropdownInput) {
-                  const dropdownId = dropdownInput.dataset.target;
-                  if (dropdownId) {
-                    const dropdownUl = document.getElementById(dropdownId);
-                    if (dropdownUl) {
-                      const todosLi = Array.from(dropdownUl.querySelectorAll('li > span'))
-                                           .find(span => span.textContent.trim().toUpperCase() === 'TODOS')
-                                           ?.parentElement;
-                      // Click if it exists and is not already selected
-                      if (todosLi && !todosLi.classList.contains('selected')) {
-                        todosLi.click();
-                      }
-                    }
-                  }
-                }
-              }
-            } else {
-              console.warn('[StatusInvest Ext] Pagination control for "AÇÕES" not found inside its group.');
-            }
-            resolve(); // Promise resolves successfully
-          } catch (e) { reject(e); }
-        }, 1000); // Wait 1s for animations
-      } catch (e) { reject(e); }
-    });
-  }
-  
   // Global utility functions for portfolio management
   function parseBRLValue(text) {
     if (!text || typeof text !== 'string') return 0;
@@ -1126,6 +1371,166 @@ function readHoldingsFromPage(rootEl) {
     }
   }
 
+
+
+  function collectPortfolioDataNow(totals) {
+    try {
+      // First, ensure ALL pagination selectors are set to "TODOS"
+      const allPaginationSelects = document.querySelectorAll('select[data-formselect]');
+      console.log(`[Portfolio Totals] Found ${allPaginationSelects.length} pagination selectors`);
+      
+      allPaginationSelects.forEach((select, idx) => {
+        const currentValue = select.value;
+        const todosOption = select.querySelector('option[value="-1"]');
+        
+        console.log(`[Portfolio Totals] Pagination ${idx} - ID: ${select.id}, Current: ${currentValue}, Has TODOS option: ${!!todosOption}`);
+        
+        if (todosOption && currentValue !== '-1') {
+          console.log(`[Portfolio Totals] Setting pagination ${idx} to TODOS`);
+          select.value = '-1';
+          todosOption.selected = true;
+          
+          // Trigger multiple events to ensure the change is recognized
+          const changeEvent = new Event('change', { bubbles: true });
+          const inputEvent = new Event('input', { bubbles: true });
+          select.dispatchEvent(changeEvent);
+          select.dispatchEvent(inputEvent);
+          
+          // Also try clicking the option
+          todosOption.click();
+        }
+      });
+
+      // Also handle the visual dropdown selectors
+      const dropdownInputs = document.querySelectorAll('.select-dropdown');
+      console.log(`[Portfolio Totals] Found ${dropdownInputs.length} visual dropdown inputs`);
+      
+      dropdownInputs.forEach((input, idx) => {
+        const currentValue = input.value;
+        console.log(`[Portfolio Totals] Dropdown ${idx} current value: "${currentValue}"`);
+        
+        if (currentValue !== 'TODOS') {
+          console.log(`[Portfolio Totals] Setting visual dropdown ${idx} to TODOS`);
+          input.value = 'TODOS';
+          
+          // Try to trigger the underlying select change
+          const parentWrapper = input.closest('.select-wrapper');
+          if (parentWrapper) {
+            const hiddenSelect = parentWrapper.querySelector('select');
+            if (hiddenSelect) {
+              hiddenSelect.value = '-1';
+              const changeEvent = new Event('change', { bubbles: true });
+              hiddenSelect.dispatchEvent(changeEvent);
+            }
+          }
+        }
+      });
+
+      // Wait a bit for pagination to apply, then collect data
+      setTimeout(() => {
+        // Find all category headers and extract their values
+        const categoryHeaders = document.querySelectorAll('ul.collapsible li.group header.collapsible-header');
+        console.log(`[Portfolio Totals] Found ${categoryHeaders.length} category headers`);
+
+        categoryHeaders.forEach((header, index) => {
+          try {
+            // Find the category title (h3 element)
+            const titleElement = header.querySelector('h3');
+            if (!titleElement) {
+              console.log(`[Portfolio Totals] No h3 title found in header ${index}`);
+              return;
+            }
+
+            const categoryName = titleElement.textContent.trim();
+            console.log(`[Portfolio Totals] Processing category: "${categoryName}"`);
+
+            // Skip if this category is not in our tracking list
+            if (!totals.hasOwnProperty(categoryName)) {
+              console.log(`[Portfolio Totals] Skipping untracked category: "${categoryName}"`);
+              return;
+            }
+
+            // Find the value in the right section of the header
+            // Based on your HTML, look for the pattern: .line > div > div > small > span.sensitive-field.fw-600
+            const lineSection = header.querySelector('.line');
+            if (!lineSection) {
+              console.log(`[Portfolio Totals] No line section found for ${categoryName}`);
+              return;
+            }
+
+            // Try multiple specific selectors based on the HTML structure you provided
+            let valueSpan = null;
+            
+            // Primary selector - exact match from HTML
+            valueSpan = lineSection.querySelector('small span.sensitive-field.fw-600');
+            
+            if (!valueSpan) {
+              // Fallback selectors
+              valueSpan = lineSection.querySelector('span.sensitive-field.fw-600');
+            }
+            
+            if (!valueSpan) {
+              valueSpan = lineSection.querySelector('span.sensitive-field');
+            }
+            
+            if (!valueSpan) {
+              // Look for any span in small element that contains numbers
+              const smallElements = lineSection.querySelectorAll('small');
+              for (const small of smallElements) {
+                const spans = small.querySelectorAll('span');
+                for (const span of spans) {
+                  const text = span.textContent.trim();
+                  if (text && /\d+[\.,]\d+/.test(text)) {
+                    valueSpan = span;
+                    break;
+                  }
+                }
+                if (valueSpan) break;
+              }
+            }
+
+            if (!valueSpan) {
+              console.log(`[Portfolio Totals] No value span found for ${categoryName}`);
+              // Log more structure for debugging
+              const smallElements = lineSection.querySelectorAll('small');
+              console.log(`[Portfolio Totals] Found ${smallElements.length} small elements in line section`);
+              smallElements.forEach((small, idx) => {
+                console.log(`[Portfolio Totals] Small ${idx}:`, small.textContent.trim());
+              });
+              return;
+            }
+
+            const valueText = valueSpan.textContent.trim();
+            console.log(`[Portfolio Totals] ${categoryName}: Raw value = "${valueText}"`);
+
+            // Parse the value (it should be in format like "12.069,30")
+            const value = parseBRLValue(`R$ ${valueText}`);
+            console.log(`[Portfolio Totals] ${categoryName}: Parsed value = ${value}`);
+
+            if (value > 0) {
+              totals[categoryName] = value;
+              console.log(`[Portfolio Totals] ✓ ${categoryName}: ${valueText} -> R$ ${value.toFixed(2)}`);
+            }
+
+          } catch (error) {
+            console.error(`[Portfolio Totals] Error processing header ${index}:`, error);
+          }
+        });
+
+        // Save the updated totals
+        console.log('[Portfolio Totals] Final collected totals:', totals);
+        savePortfolioTotalsToCache(totals);
+        
+      }, 1500); // Wait for pagination changes to apply
+
+      console.log('[Portfolio Totals] Pagination setup completed, data collection scheduled');
+      
+    } catch (error) {
+      console.error('[Portfolio Totals] Error in data collection:', error);
+    }
+  }
+
+  // Global Portfolio Totals Functions
   // Collect portfolio totals by asset class
   function collectPortfolioTotals() {
     const totals = {
@@ -1141,9 +1546,9 @@ function readHoldingsFromPage(rootEl) {
         '1': 'acoes',          // Ações
         '2': 'fiis',           // FIIs
         '22': 'fiis',          // FI-Infra
-        '24': 'fiis',          // FI-Agro
-        '6': 'etfs',           // ETFs
-        '901': 'exterior'      // Exterior
+        '24': 'fiis',          // FIAGRO
+        '6': 'etfs',           // ETF Brasil
+        '901': 'exterior'      // ETF Exterior
       };
 
       // Find all category headers and their corresponding total values
@@ -1165,39 +1570,42 @@ function readHoldingsFromPage(rootEl) {
                 console.warn(`[Portfolio Totals] No collapsible header found for category ${categoryCode}`);
                 return;
               }
-
-              // Find the next element (collapsible body)
-              const collapsibleBody = collapsibleHeader.nextElementSibling;
-              if (!collapsibleBody || !collapsibleBody.classList.contains('collapsible-body')) {
-                console.warn(`[Portfolio Totals] No collapsible body found for category ${categoryCode}`);
-                return;
+              
+              // Find the percentage line section which contains the total value
+              // Try different selectors for the line containing the value
+              let percentageLine = collapsibleHeader.querySelector('.line');
+              if (!percentageLine) {
+                // Try alternative selectors
+                percentageLine = collapsibleHeader.querySelector('.d-flex.align-items-center');
+                if (!percentageLine) {
+                  percentageLine = collapsibleHeader.querySelector('div[class*="line"]');
+                  if (!percentageLine) {
+                    // Try to find any element containing the value pattern
+                    percentageLine = collapsibleHeader;
+                  }
+                }
               }
-
-              // Look for percentage display line
-              const percentageLine = collapsibleBody.querySelector('div.row div.col.s6.align-right');
+              
               if (!percentageLine) {
                 console.warn(`[Portfolio Totals] No percentage line found for category ${categoryCode}`);
+                console.log(`[Portfolio Totals] Available elements in header:`, collapsibleHeader.innerHTML.substring(0, 200) + '...');
                 return;
               }
-
-              // Find the value container within the percentage line
-              let valueContainer = percentageLine.querySelector('div.inline-flex.align-items-center');
+              
+              // Find the total value in the format: R$<span class="sensitive-field fw-600">12.161,25</span>
+              // Try different selectors for the value container
+              let valueContainer = percentageLine.querySelector('small.fs-3.lh-3.fw-100');
               if (!valueContainer) {
-                // Try alternative selector
-                valueContainer = percentageLine.querySelector('div[class*="inline"]');
+                // Try alternative selectors
+                valueContainer = percentageLine.querySelector('small');
                 if (!valueContainer) {
-                  // Look for any div with value-related content
-                  const potentialContainers = percentageLine.querySelectorAll('div');
-                  for (const container of potentialContainers) {
-                    if (container.textContent.includes('R$') || /\d/.test(container.textContent)) {
-                      valueContainer = container;
-                      break;
-                    }
-                  }
-                  
+                  valueContainer = percentageLine.querySelector('.fs-3');
                   if (!valueContainer) {
-                    // Last resort: search in the entire line
-                    valueContainer = percentageLine;
+                    valueContainer = percentageLine.querySelector('[class*="fs-"]');
+                    if (!valueContainer) {
+                      // Last resort: search in the entire line
+                      valueContainer = percentageLine;
+                    }
                   }
                 }
               }
@@ -1207,7 +1615,7 @@ function readHoldingsFromPage(rootEl) {
                 console.log(`[Portfolio Totals] Available elements in percentage line:`, percentageLine.innerHTML.substring(0, 200) + '...');
                 return;
               }
-
+              
               // Find the span with the actual value
               let valueSpan = valueContainer.querySelector('span.sensitive-field.fw-600');
               if (!valueSpan) {
@@ -1258,41 +1666,42 @@ function readHoldingsFromPage(rootEl) {
                 const value = parseBRLValue(textToParse);
                 console.log(`[Portfolio Totals] Category ${categoryCode}: Parsed value = ${value} (from "${valueText}")`);
                 
-                if (value > 0) {
-                  const targetCategory = categoryMappings[categoryCode];
-                  totals[targetCategory] += value;
-                  console.log(`[Portfolio Totals] ✓ Category ${categoryCode} (${targetCategory}): ${textToParse} -> ${value}`);
+                const consolidatedCategory = categoryMappings[categoryCode];
+                
+                if (isNaN(value)) {
+                  console.error(`[Portfolio Totals] NaN detected for category ${categoryCode}! Raw text: "${valueText}", Attempted parse: ${value}`);
+                  console.log(`[Portfolio Totals] Full element HTML:`, valueSpan.outerHTML);
                 } else {
-                  console.warn(`[Portfolio Totals] ✗ Category ${categoryCode}: Invalid value "${valueText}" -> ${value}`);
+                  totals[consolidatedCategory] += value;
+                  console.log(`[Portfolio Totals] ✓ Category ${categoryCode} (${consolidatedCategory}): R$ ${valueText} -> ${value}`);
                 }
               } else {
-                console.warn(`[Portfolio Totals] ✗ Category ${categoryCode}: No text content found`);
+                console.warn(`[Portfolio Totals] No value text found for category ${categoryCode}`);
+                console.log(`[Portfolio Totals] Value span content:`, valueSpan);
               }
-              
-            } catch (headerError) {
-              console.error(`[Portfolio Totals] Error processing header for category ${categoryCode}:`, headerError);
+            } catch (error) {
+              console.warn(`[Portfolio Totals] Error processing category ${categoryCode} header:`, error);
             }
           });
-        } catch (categoryError) {
-          console.error(`[Portfolio Totals] Error processing category ${categoryCode}:`, categoryError);
+        } catch (error) {
+          console.warn(`[Portfolio Totals] Error processing category ${categoryCode}:`, error);
         }
       });
 
       console.log('[Portfolio Totals] Final totals:', totals);
       return totals;
-      
     } catch (error) {
       console.error('[Portfolio Totals] Error collecting portfolio totals:', error);
-      return totals; // Return empty totals object
+      return totals;
     }
   }
 
   // Save portfolio totals to cache
   function savePortfolioTotalsToCache(totals) {
     try {
-      chrome.storage.local.set({ 'portfolio_totals_by_class': totals }, () => {
+      chrome.storage.local.set({ portfolio_totals_by_class: totals }, () => {
         if (chrome.runtime.lastError) {
-          console.error('[Portfolio Totals] Error saving totals to cache:', chrome.runtime.lastError);
+          console.error('[Portfolio Totals] Error saving to cache:', chrome.runtime.lastError.message);
         } else {
           console.log('[Portfolio Totals] Totals saved to cache:', totals);
         }
@@ -1304,25 +1713,20 @@ function readHoldingsFromPage(rootEl) {
 
   // Get portfolio totals from cache
   function getPortfolioTotalsFromCache(callback) {
-    if (typeof callback !== 'function') {
-      console.error('[Portfolio Totals] Callback is required');
-      return;
-    }
-    
     try {
       chrome.storage.local.get(['portfolio_totals_by_class'], (result) => {
         if (chrome.runtime.lastError) {
-          console.error('[Portfolio Totals] Error getting totals from cache:', chrome.runtime.lastError);
+          console.error('[Portfolio Totals] Error reading from cache:', chrome.runtime.lastError.message);
           callback(null);
         } else {
-          const totals = result.portfolio_totals_by_class;
-          if (totals) {
-            console.log('[Portfolio Totals] Totals retrieved from cache:', totals);
-            callback(totals);
-          } else {
-            console.warn('[Portfolio Totals] No totals found in cache');
-            callback(null);
-          }
+          const totals = result.portfolio_totals_by_class || {
+            acoes: 0,
+            fiis: 0,
+            etfs: 0,
+            exterior: 0
+          };
+          console.log('[Portfolio Totals] Totals retrieved from cache:', totals);
+          callback(totals);
         }
       });
     } catch (error) {
@@ -1545,14 +1949,29 @@ function readHoldingsFromPage(rootEl) {
         return 'FIIs';
       }
       
-      // ETFs - alguns padrões comuns
+      // ETFs nacionais - alguns padrões comuns
       if (/^(BOVA|SMAL|IVVB|SPXI|BRAX|XINA|PIBB|ISUS|IMAB|IVVB|IFIX|DIVO|FIND|MATB|ECOO|GOVE|BOVX)/.test(ticker)) {
-        return 'ETFs';
+        return 'ETF';
       }
       
-      // EUA - BDRs geralmente terminam com 34 ou 35
+      // ETFs exteriores - BDRs de ETFs
+      if (/^(VTI|SPY|QQQ|IVV|VOO)/.test(ticker) && (ticker.endsWith('34') || ticker.endsWith('35'))) {
+        return 'ETF Exterior';
+      }
+      
+      // FI-Infra - Fundos de infraestrutura
+      if (/INFRA|IFIE|IFID|RCFF/.test(ticker)) {
+        return 'FI-Infra';
+      }
+      
+      // FIAGRO - Fundos do agronegócio
+      if (/AGRO|FIAG|TGAR|RECR/.test(ticker)) {
+        return 'FIAGRO';
+      }
+      
+      // BDRs gerais - terminam com 34 ou 35
       if (ticker.endsWith('34') || ticker.endsWith('35')) {
-        return 'EUA';
+        return 'ETF Exterior';
       }
       
       // Ações - padrão geral
@@ -1614,219 +2033,17 @@ function readHoldingsFromPage(rootEl) {
       }
     }
 
-    // Collect portfolio totals by asset class
-    function collectPortfolioTotals() {
-      const totals = {
-        acoes: 0,
-        fiis: 0,
-        etfs: 0,
-        exterior: 0
-      };
-
-      try {
-        // Map of categories to consolidate
-        const categoryMappings = {
-          '1': 'acoes',          // Ações
-          '2': 'fiis',           // FIIs
-          '22': 'fiis',          // FI-Infra
-          '24': 'fiis',          // FIAGRO
-          '6': 'etfs',           // ETF Brasil
-          '901': 'exterior'      // ETF Exterior
-        };
-
-        // Find all category headers and their corresponding total values
-        console.log('[Portfolio Totals] Starting collection with category mappings:', categoryMappings);
-        
-        Object.keys(categoryMappings).forEach(categoryCode => {
-          try {
-            // Find headers with the category class
-            const selector = `h3.text-category-${categoryCode}`;
-            const headers = document.querySelectorAll(selector);
-            console.log(`[Portfolio Totals] Found ${headers.length} headers for selector: ${selector}`);
-            
-            headers.forEach((header, index) => {
-              console.log(`[Portfolio Totals] Processing header ${index + 1} for category ${categoryCode}`);
-              try {
-                // Find the parent collapsible header
-                const collapsibleHeader = header.closest('header.collapsible-header');
-                if (!collapsibleHeader) {
-                  console.warn(`[Portfolio Totals] No collapsible header found for category ${categoryCode}`);
-                  return;
-                }
-                
-                // Find the percentage line section which contains the total value
-                // Try different selectors for the line containing the value
-                let percentageLine = collapsibleHeader.querySelector('.line');
-                if (!percentageLine) {
-                  // Try alternative selectors
-                  percentageLine = collapsibleHeader.querySelector('.d-flex.align-items-center');
-                  if (!percentageLine) {
-                    percentageLine = collapsibleHeader.querySelector('div[class*="line"]');
-                    if (!percentageLine) {
-                      // Try to find any element containing the value pattern
-                      percentageLine = collapsibleHeader;
-                    }
-                  }
-                }
-                
-                if (!percentageLine) {
-                  console.warn(`[Portfolio Totals] No percentage line found for category ${categoryCode}`);
-                  console.log(`[Portfolio Totals] Available elements in header:`, collapsibleHeader.innerHTML.substring(0, 200) + '...');
-                  return;
-                }
-                
-                // Find the total value in the format: R$<span class="sensitive-field fw-600">12.161,25</span>
-                // Try different selectors for the value container
-                let valueContainer = percentageLine.querySelector('small.fs-3.lh-3.fw-100');
-                if (!valueContainer) {
-                  // Try alternative selectors
-                  valueContainer = percentageLine.querySelector('small');
-                  if (!valueContainer) {
-                    valueContainer = percentageLine.querySelector('.fs-3');
-                    if (!valueContainer) {
-                      valueContainer = percentageLine.querySelector('[class*="fs-"]');
-                      if (!valueContainer) {
-                        // Last resort: search in the entire line
-                        valueContainer = percentageLine;
-                      }
-                    }
-                  }
-                }
-                
-                if (!valueContainer) {
-                  console.warn(`[Portfolio Totals] No value container found for category ${categoryCode}`);
-                  console.log(`[Portfolio Totals] Available elements in percentage line:`, percentageLine.innerHTML.substring(0, 200) + '...');
-                  return;
-                }
-                
-                // Find the span with the actual value
-                let valueSpan = valueContainer.querySelector('span.sensitive-field.fw-600');
-                if (!valueSpan) {
-                  // Try alternative selectors
-                  valueSpan = valueContainer.querySelector('span.sensitive-field');
-                  if (!valueSpan) {
-                    valueSpan = valueContainer.querySelector('span.fw-600');
-                    if (!valueSpan) {
-                      valueSpan = valueContainer.querySelector('span[class*="sensitive"]');
-                      if (!valueSpan) {
-                        // Try any span with numeric content that looks like currency
-                        const allSpans = valueContainer.querySelectorAll('span');
-                        for (const span of allSpans) {
-                          const text = span.textContent?.trim();
-                          // Skip spans with non-numeric words like "ativos", "item", etc
-                          if (text && /\d+[.,]\d+/.test(text) && 
-                              !text.toLowerCase().includes('ativo') &&
-                              !text.toLowerCase().includes('item') &&
-                              !/^[a-zA-Z]+$/.test(text)) {
-                            valueSpan = span;
-                            console.log(`[Portfolio Totals] Found numeric span: "${text}"`);
-                            break;
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-                
-                if (!valueSpan) {
-                  console.warn(`[Portfolio Totals] No value span found for category ${categoryCode}`);
-                  console.log(`[Portfolio Totals] Available spans in value container:`, 
-                    Array.from(valueContainer.querySelectorAll('span')).map(s => s.className + ': ' + s.textContent).join(', '));
-                  return;
-                }
-                
-                const valueText = valueSpan.textContent?.trim();
-                console.log(`[Portfolio Totals] Category ${categoryCode}: Raw value text = "${valueText}"`);
-                
-                if (valueText) {
-                  // Don't add R$ prefix if the text already contains non-numeric content
-                  let textToParse = valueText;
-                  if (!/[a-zA-Z]/.test(valueText)) {
-                    // Only add R$ prefix if it's purely numeric (with possible , . - formatting)
-                    textToParse = 'R$ ' + valueText;
-                  }
-                  
-                  const value = parseBRLValue(textToParse);
-                  console.log(`[Portfolio Totals] Category ${categoryCode}: Parsed value = ${value} (from "${valueText}")`);
-                  
-                  const consolidatedCategory = categoryMappings[categoryCode];
-                  
-                  if (isNaN(value)) {
-                    console.error(`[Portfolio Totals] NaN detected for category ${categoryCode}! Raw text: "${valueText}", Attempted parse: ${value}`);
-                    console.log(`[Portfolio Totals] Full element HTML:`, valueSpan.outerHTML);
-                  } else {
-                    totals[consolidatedCategory] += value;
-                    console.log(`[Portfolio Totals] ✓ Category ${categoryCode} (${consolidatedCategory}): R$ ${valueText} -> ${value}`);
-                  }
-                } else {
-                  console.warn(`[Portfolio Totals] No value text found for category ${categoryCode}`);
-                  console.log(`[Portfolio Totals] Value span content:`, valueSpan);
-                }
-              } catch (error) {
-                console.warn(`[Portfolio Totals] Error processing category ${categoryCode} header:`, error);
-              }
-            });
-          } catch (error) {
-            console.warn(`[Portfolio Totals] Error processing category ${categoryCode}:`, error);
-          }
-        });
-
-        console.log('[Portfolio Totals] Final totals:', totals);
-        return totals;
-      } catch (error) {
-        console.error('[Portfolio Totals] Error collecting portfolio totals:', error);
-        return totals;
-      }
-    }
-
-    // Save portfolio totals to cache
-    function savePortfolioTotalsToCache(totals) {
-      try {
-        chrome.storage.local.set({ portfolio_totals_by_class: totals }, () => {
-          if (chrome.runtime.lastError) {
-            console.error('[Portfolio Totals] Error saving to cache:', chrome.runtime.lastError.message);
-          } else {
-            console.log('[Portfolio Totals] Totals saved to cache:', totals);
-          }
-        });
-      } catch (error) {
-        console.error('[Portfolio Totals] Error saving totals to cache:', error);
-      }
-    }
-
-    // Get portfolio totals from cache
-    function getPortfolioTotalsFromCache(callback) {
-      try {
-        chrome.storage.local.get(['portfolio_totals_by_class'], (result) => {
-          if (chrome.runtime.lastError) {
-            console.error('[Portfolio Totals] Error reading from cache:', chrome.runtime.lastError.message);
-            callback(null);
-          } else {
-            const totals = result.portfolio_totals_by_class || {
-              acoes: 0,
-              fiis: 0,
-              etfs: 0,
-              exterior: 0
-            };
-            console.log('[Portfolio Totals] Totals retrieved from cache:', totals);
-            callback(totals);
-          }
-        });
-      } catch (error) {
-        console.error('[Portfolio Totals] Error getting totals from cache:', error);
-        callback(null);
-      }
-    }
-
     // Portfolio allocation management (simplified)
     function getAllocationData() {
       return new Promise((resolve) => {
         chrome.storage.local.get(['allocation_data'], (result) => {
           const defaultData = {
-            'Ações': { target: 50 },
+            'Ações': { target: 40 },
             'FIIs': { target: 20 },
-            'ETFs': { target: 15 },
-            'EUA': { target: 15 }
+            'ETF': { target: 15 },
+            'FI-Infra': { target: 10 },
+            'FIAGRO': { target: 10 },
+            'ETF Exterior': { target: 5 }
           };
           resolve(result.allocation_data || defaultData);
         });
@@ -1964,8 +2181,8 @@ function readHoldingsFromPage(rootEl) {
 
         // Step 1: Collect portfolio totals by asset class
         try {
-          const portfolioTotals = collectPortfolioTotals();
-          savePortfolioTotalsToCache(portfolioTotals);
+          console.log(`[${functionName}] Starting portfolio data collection...`);
+          collectPortfolioTotals(); // This will save to cache asynchronously
         } catch (totalsError) {
           console.error(`[${functionName}] Error collecting portfolio totals:`, totalsError);
         }
@@ -1977,7 +2194,9 @@ function readHoldingsFromPage(rootEl) {
           return;
         }
 
-        // Step 3: Get allocation data and portfolio totals
+        // Step 3: Wait a moment for data collection then get allocation data and portfolio totals
+        await new Promise(resolve => setTimeout(resolve, 2000)); // Wait for collection to complete
+        
         const [baseAllocationData, cachedTotals] = await Promise.all([
           getAllocationData(),
           new Promise(resolve => getPortfolioTotalsFromCache(resolve))
@@ -1994,10 +2213,12 @@ function readHoldingsFromPage(rootEl) {
 
         // Step 4: Build distribution data
         const distribution = {
-          'Ações': { value: cachedTotals.acoes, count: 0, tickers: [] },
-          'FIIs': { value: cachedTotals.fiis, count: 0, tickers: [] },
-          'ETFs': { value: cachedTotals.etfs, count: 0, tickers: [] },
-          'EUA': { value: cachedTotals.exterior, count: 0, tickers: [] }
+          'Ações': { value: cachedTotals['Ações'] || 0, count: 0, tickers: [] },
+          'FIIs': { value: cachedTotals['FIIs'] || 0, count: 0, tickers: [] },
+          'ETF': { value: cachedTotals['ETF'] || 0, count: 0, tickers: [] },
+          'FI-Infra': { value: cachedTotals['FI-Infra'] || 0, count: 0, tickers: [] },
+          'FIAGRO': { value: cachedTotals['FIAGRO'] || 0, count: 0, tickers: [] },
+          'ETF Exterior': { value: cachedTotals['ETF Exterior'] || 0, count: 0, tickers: [] }
         };
 
         // Count tickers per class
@@ -2963,6 +3184,13 @@ function readHoldingsFromPage(rootEl) {
         tr.row-holding td:nth-child(2) { color:#03ab95; font-weight:700; }
         tr.row-sell-selected { background-color: #03ab95; color: white; }
         tr.row-sell-selected .muted { color: #f0fdfa; }
+        /* Class header styles */
+        .class-header { background-color: #f8fafc !important; font-weight: bold !important; border-top: 2px solid #e5e7eb !important; }
+        .class-header td { padding: 8px !important; color: #374151 !important; font-size: 13px !important; }
+        .class-subtotal { font-weight: 600 !important; background-color: #f3f4f6 !important; border-bottom: 1px solid #d1d5db !important; }
+        .class-subtotal td { padding: 6px 8px !important; font-size: 12px !important; }
+        .grand-total { font-weight: bold !important; border-top: 3px solid #374151 !important; background-color: #1f2937 !important; color: white !important; }
+        .grand-total td { padding: 8px !important; color: white !important; font-weight: bold !important; }
         .table-wrap.no-scroll { max-height: none; overflow: visible; }
         .mode { display:flex; align-items:center; gap:6px; }
         .mode label { display:flex; align-items:center; gap:4px; cursor:pointer; }
@@ -2998,8 +3226,8 @@ function readHoldingsFromPage(rootEl) {
             </div>
             <div class="controls-row">
               <span id="ewAutoRefreshStatus" style="color: white; font-size: 11px; font-style: italic; margin-right: auto;"></span>
-              <button id="ewAutoRefresh" class="toggle-btn" type="button" title="Verificar automaticamente a cada 5 minutos se os preços das ações foram atualizados.">Iniciar Verificação</button>
-              <button id="ewUpdateMyStocks" class="toggle-btn" type="button" title="Exibe todos os ativos e salva a lista da sua carteira para uso nos cálculos.">Atualizar Minhas Ações</button>
+              <button id="ewAutoRefresh" class="toggle-btn" type="button" title="Verificar automaticamente a cada 5 minutos se os preços dos ativos foram atualizados.">Iniciar Verificação</button>
+              <button id="ewUpdateMyStocks" class="toggle-btn" type="button" title="Exibe todos os ativos da carteira (Ações, FIIs, etc) e salva a lista para uso nos cálculos.">Atualizar Meus Ativos</button>
               <button id="ewExportCsv" class="toggle-btn" type="button" title="Baixar tabela em CSV.">Exportar CSV</button>
               <button id="ewToggle" class="toggle-btn" type="button">Ocultar</button>
             </div>
@@ -3046,7 +3274,7 @@ function readHoldingsFromPage(rootEl) {
           </div>
         </div>
         <div class="header sell-header" id="ewSellHeader" style="margin-top: 16px; display: none;">
-          <h3 class="title">Plano de Venda (Ativos Fora do Top N)</h3>
+          <h3 class="title">🏷️ Plano de Venda por Classe (Ativos Fora do Top N)</h3>
           <div class="controls">
             <div class="controls-row">
               <label>Ação
@@ -3069,7 +3297,9 @@ function readHoldingsFromPage(rootEl) {
                             <th>Ticker</th>
                             <th class="num">Qtd atual</th>
                             <th class="num">Preço</th>
+                            <th class="num">P.Médio</th>
                             <th class="num">Valor total</th>
+                            <th class="num">Lucro/Perda</th>
                             <th class="num" style="text-align:center; width:50px;"><input type="checkbox" id="ewSellSelectAll" title="Selecionar Todos"></th>
                         </tr>
                     </thead>
@@ -3362,7 +3592,8 @@ function readHoldingsFromPage(rootEl) {
             <thead style="text-align:left;">
               <tr>
                 <th style="padding:4px; border-bottom:1px solid #e5e7eb;">Ativo</th>
-                <th style="padding:4px; border-bottom:1px solid #e5e7eb; text-align:right;">Preço em Cache</th>
+                <th style="padding:4px; border-bottom:1px solid #e5e7eb; text-align:right;">Preço Cache</th>
+                <th style="padding:4px; border-bottom:1px solid #e5e7eb; text-align:right;">P.Médio Cache</th>
                 <th style="padding:4px; border-bottom:1px solid #e5e7eb; text-align:right;">Preço Atual</th>
               </tr>
             </thead>
@@ -3370,10 +3601,12 @@ function readHoldingsFromPage(rootEl) {
               ${Object.entries(cachedHoldings).map(([ticker, data]) => {
                 const currentPageHolding = pageHoldings[ticker];
                 const currentPrice = currentPageHolding ? currentPageHolding.price : NaN;
+                const avgPriceCache = data.avgPrice || 0;
                 return `
                   <tr>
                     <td style="padding:4px;">${ticker}</td>
                     <td style="padding:4px; text-align:right;">${fmtBRL(data.price)}</td>
+                    <td style="padding:4px; text-align:right;">${fmtBRL(avgPriceCache)}</td>
                     <td style="padding:4px; text-align:right;">${Number.isFinite(currentPrice) ? fmtBRL(currentPrice) : '-'}</td>
                   </tr>
                 `;
@@ -3740,6 +3973,11 @@ function readHoldingsFromPage(rootEl) {
   
       chrome.storage.local.get(['my_portfolio_holdings'], (result) => {
         try {
+          // Add a check to prevent errors if the extension context is lost
+          if (chrome.runtime.lastError || !result) {
+            console.error('[recompute] Error getting holdings from storage:', chrome.runtime.lastError?.message || 'Result is empty');
+            return;
+          }
           const holdings = result.my_portfolio_holdings;
     
           if (!holdings || typeof holdings !== 'object' || Object.keys(holdings).length === 0) {
@@ -3973,44 +4211,118 @@ function readHoldingsFromPage(rootEl) {
               const ewSellBody = $('#ewSellBody');
               ewSellBody.innerHTML = '';
     
-              const stocksToSell = [];
+              // Classify assets to sell by type
+              const stocksToSellByClass = {
+                'Ações': [],
+                'FIIs': [],
+                'ETF': [],
+                'FI-Infra': [],
+                'FIAGRO': [],
+                'ETF Exterior': []
+              };
+              
               for (const ticker in holdings) {
                 if (holdings[ticker] && holdings[ticker].qty > 0 && !topTickers.has(ticker)) {
                   const stock = holdings[ticker];
-                  stocksToSell.push({
+                  const assetClass = classifyAsset(ticker);
+                  
+                  const investedValue = (Number.isFinite(stock.avgPrice) && Number.isFinite(stock.qty)) ? stock.avgPrice * stock.qty : 0;
+                  const currentValue = (Number.isFinite(stock.price) && Number.isFinite(stock.qty)) ? stock.price * stock.qty : 0;
+                  const profitLoss = currentValue - investedValue;
+                  const profitLossPercent = investedValue > 0 ? ((profitLoss / investedValue) * 100) : 0;
+                  
+                  stocksToSellByClass[assetClass].push({
                     code: ticker,
                     qty: stock.qty,
                     price: stock.price,
-                    totalValue: (Number.isFinite(stock.price) && Number.isFinite(stock.qty)) ? stock.price * stock.qty : 0,
+                    avgPrice: stock.avgPrice || 0,
+                    totalValue: currentValue,
+                    investedValue: investedValue,
+                    profitLoss: profitLoss,
+                    profitLossPercent: profitLossPercent
                   });
                 }
               }
     
-              if (stocksToSell.length > 0) {
+              // Check if there are any stocks to sell
+              const totalStocksToSell = Object.values(stocksToSellByClass).reduce((sum, stocks) => sum + stocks.length, 0);
+              
+              if (totalStocksToSell > 0) {
                 ewSellHeader.style.display = 'flex';
                 // Visibility of ewSellBodyWrap is controlled by its own collapse logic
                 const showCurrency = ewSellShowCurrency.checked;
                 const priceFormatter = showCurrency ? fmtBRL : fmtNumberBR;
     
-                stocksToSell.sort((a, b) => b.totalValue - a.totalValue);
-                let totalSellValue = 0;
-                stocksToSell.forEach(stock => {
-                  const tr = document.createElement('tr');
-                  tr.innerHTML = `
-                <td>${stock.code}F</td>
-                <td class="num">${stock.qty}</td>
-                <td class="num">${Number.isFinite(stock.price) ? fmtNumberBR(stock.price) : '<span class="muted">—</span>'}</td>
-                <td class="num">${Number.isFinite(stock.totalValue) ? fmtBRL(stock.totalValue) : '<span class="muted">—</span>'}</td>
-                <td class="num" style="text-align:center;"><input type="checkbox" class="ew-sell-checkbox" data-ticker="${stock.code}"></td>
-              `;
-                  ewSellBody.appendChild(tr);
-                  if (Number.isFinite(stock.totalValue)) totalSellValue += stock.totalValue;
+                let grandTotalSellValue = 0;
+                
+                // Process each asset class
+                Object.keys(stocksToSellByClass).forEach(assetClass => {
+                  const stocks = stocksToSellByClass[assetClass];
+                  if (stocks.length === 0) return;
+                  
+                  // Sort stocks within each class by total value (descending)
+                  stocks.sort((a, b) => b.totalValue - a.totalValue);
+                  
+                  // Add class header
+                  const classHeaderTr = document.createElement('tr');
+                  classHeaderTr.className = 'class-header';
+                  classHeaderTr.innerHTML = `
+                    <td colspan="7">
+                      🏷️ ${assetClass} (${stocks.length} ${stocks.length === 1 ? 'ativo' : 'ativos'})
+                    </td>
+                  `;
+                  ewSellBody.appendChild(classHeaderTr);
+                  
+                  // Add stocks for this class
+                  let classTotalValue = 0;
+                  stocks.forEach(stock => {
+                    const tr = document.createElement('tr');
+                    const profitLossColor = stock.profitLoss >= 0 ? '#059669' : '#dc2626';
+                    const profitLossIcon = stock.profitLoss >= 0 ? '📈' : '📉';
+                    
+                    tr.innerHTML = `
+                      <td>${stock.code}</td>
+                      <td class="num">${stock.qty}</td>
+                      <td class="num">${Number.isFinite(stock.price) ? fmtNumberBR(stock.price) : '<span class="muted">—</span>'}</td>
+                      <td class="num">${Number.isFinite(stock.avgPrice) ? fmtNumberBR(stock.avgPrice) : '<span class="muted">—</span>'}</td>
+                      <td class="num">${Number.isFinite(stock.totalValue) ? fmtBRL(stock.totalValue) : '<span class="muted">—</span>'}</td>
+                      <td class="num" style="color: ${profitLossColor};">
+                        ${Number.isFinite(stock.profitLoss) ? 
+                          `${profitLossIcon} ${fmtBRL(stock.profitLoss)} (${stock.profitLossPercent >= 0 ? '+' : ''}${stock.profitLossPercent.toFixed(1)}%)` : 
+                          '<span class="muted">—</span>'
+                        }
+                      </td>
+                      <td class="num" style="text-align:center;"><input type="checkbox" class="ew-sell-checkbox" data-ticker="${stock.code}"></td>
+                    `;
+                    ewSellBody.appendChild(tr);
+                    if (Number.isFinite(stock.totalValue)) {
+                      classTotalValue += stock.totalValue;
+                      grandTotalSellValue += stock.totalValue;
+                    }
+                  });
+                  
+                  // Add class subtotal
+                  const classSubtotalTr = document.createElement('tr');
+                  classSubtotalTr.className = 'class-subtotal';
+                  classSubtotalTr.innerHTML = `
+                    <td colspan="4">Subtotal ${assetClass}</td>
+                    <td class="num">${fmtBRL(classTotalValue)}</td>
+                    <td></td>
+                    <td></td>
+                  `;
+                  ewSellBody.appendChild(classSubtotalTr);
                 });
-                const totalTr = document.createElement('tr');
-                totalTr.style.fontWeight = 'bold';
-                totalTr.style.borderTop = '2px solid #d1d5db';
-                totalTr.innerHTML = `<td colspan="3">Valor Total a Vender</td><td class="num" id="ewSellTotalValue">${fmtBRL(totalSellValue)}</td><td></td>`;
-                ewSellBody.appendChild(totalTr);
+                
+                // Add grand total
+                const grandTotalTr = document.createElement('tr');
+                grandTotalTr.className = 'grand-total';
+                grandTotalTr.innerHTML = `
+                  <td colspan="4">💰 VALOR TOTAL A VENDER</td>
+                  <td class="num" id="ewSellTotalValue">${fmtBRL(grandTotalSellValue)}</td>
+                  <td></td>
+                  <td></td>
+                `;
+                ewSellBody.appendChild(grandTotalTr);
                 updateSellTotal();
               } else {
                 ewSellHeader.style.display = 'none';
@@ -4220,12 +4532,14 @@ function readHoldingsFromPage(rootEl) {
       ewUpdateMyStocks.textContent = 'Atualizando...';
   
       try {
-        await setShowAllOnPagination();
+        console.log('[ewUpdateMyStocks] Showing loading overlay.');
+        window.showLoadingOverlay('Aguardando a página carregar todos os ativos...');
+        await setAllPaginationsToShowAll();
       } catch (e) {
-        console.error('[StatusInvest Ext] Erro ao tentar exibir todos os ativos:', e);
+        console.error('[StatusInvest Ext] Erro ao configurar paginações:', e);
         ewUpdateMyStocks.disabled = false;
         ewUpdateMyStocks.textContent = originalText;
-        return;
+        window.hideLoadingOverlay();
       }
   
       // Aguarda a página atualizar a lista de ativos
@@ -4252,43 +4566,26 @@ function readHoldingsFromPage(rootEl) {
             });
           }, 500);
 
-          // Find the "AÇÕES" group to use as a context for reading holdings
-          let acoesGroup = null;
-          const groups = document.querySelectorAll('li.group');
-          console.log(`[Update My Stocks] Found ${groups.length} groups on page`);
-          
-          for (const group of groups) {
-            const h3 = group.querySelector('h3');
-            const h3Text = h3 ? h3.textContent.trim().toUpperCase() : 'NO H3';
-            console.log(`[Update My Stocks] Group H3 text: "${h3Text}"`);
-            
-            if (h3 && h3Text === 'AÇÕES') {
-              acoesGroup = group;
-              console.log('[Update My Stocks] Found AÇÕES group!');
-              break;
-            }
-          }
-          
-          if (!acoesGroup) {
-            console.error('[Update My Stocks] AÇÕES group not found! Available groups:', 
-              Array.from(groups).map(g => {
-                const h3 = g.querySelector('h3');
-                return h3 ? h3.textContent.trim() : 'NO H3';
-              }));
-            ewUpdateMyStocks.disabled = false;
-            ewUpdateMyStocks.textContent = originalText;
-            alert('Não foi possível encontrar a seção AÇÕES na página. Certifique-se de estar na página de carteira.');
-            return;
-          }
-
-          console.log('[Update My Stocks] Reading holdings from AÇÕES group...');
-          const holdings = readHoldingsFromPage(acoesGroup); // Pass only the 'Ações' group context
+          console.log('[Update My Stocks] Reading all holdings from the document...');
+          const holdings = readHoldingsFromPage(document);
           
           console.log('[Update My Stocks] Holdings read result:', holdings);
           console.log('[Update My Stocks] Number of holdings found:', Object.keys(holdings).length);
           
+          // Log example showing that both current price and average price are now saved
+          const firstTicker = Object.keys(holdings)[0];
+          if (firstTicker) {
+            const firstHolding = holdings[firstTicker];
+            console.log(`[Update My Stocks] ✓ Exemplo de dados salvos - ${firstTicker}:`);
+            console.log(`  • Preço Atual: R$ ${(firstHolding.price || 0).toFixed(2)}`);
+            console.log(`  • Preço Médio: R$ ${(firstHolding.avgPrice || 0).toFixed(2)}`);
+            console.log(`  • Quantidade: ${firstHolding.qty || 0}`);
+            console.log(`  • Valor Atual: R$ ${((firstHolding.price || 0) * (firstHolding.qty || 0)).toFixed(2)}`);
+            console.log(`  • Valor Investido: R$ ${((firstHolding.avgPrice || 0) * (firstHolding.qty || 0)).toFixed(2)}`);
+          }
+          
           if (!holdings || Object.keys(holdings).length === 0) {
-            console.error('[Update My Stocks] No holdings found! Cannot save empty data.');
+            console.error('[Update My Stocks] Nenhum ativo encontrado! Não é possível salvar dados vazios.');
             ewUpdateMyStocks.disabled = false;
             ewUpdateMyStocks.textContent = originalText;
             alert('Nenhum ativo foi encontrado na carteira. Certifique-se de que a página carregou completamente e que você possui ativos.');
@@ -4297,7 +4594,7 @@ function readHoldingsFromPage(rootEl) {
           
           chrome.storage.local.set({ my_portfolio_holdings: holdings }, () => {
             if (chrome.runtime.lastError) {
-              console.error('[StatusInvest Ext] Erro ao salvar no cache (contexto invalidado?):', chrome.runtime.lastError.message);
+              console.error('[StatusInvest Ext] Erro ao salvar no cache:', chrome.runtime.lastError.message);
               ewUpdateMyStocks.disabled = false;
               ewUpdateMyStocks.textContent = originalText;
               return;
@@ -4311,7 +4608,8 @@ function readHoldingsFromPage(rootEl) {
               recompute(); // Recalcula o plano com os novos dados
             }, 3000);
           });
-        } catch (e) { console.error('[StatusInvest Ext] Erro ao ler/salvar ações:', e); ewUpdateMyStocks.disabled = false; ewUpdateMyStocks.textContent = originalText; }
+          window.hideLoadingOverlay(); // Hide overlay after everything is done
+        } catch (e) { console.error('[StatusInvest Ext] Erro ao ler/salvar ativos:', e); ewUpdateMyStocks.disabled = false; ewUpdateMyStocks.textContent = originalText; window.hideLoadingOverlay(); } // Also hide on error
       }, 3000); // 3s de espera para a página renderizar
     });
     // Mode change
@@ -4373,6 +4671,148 @@ function readHoldingsFromPage(rootEl) {
     // recompute is also called after mode load
   }
 
+  // All Assets by Class panel
+  function initAllAssetsPanel() {
+    const HOST_ID = 'all-assets-panel-host';
+    if (document.getElementById(HOST_ID)) return;
+
+    const host = document.createElement('div');
+    host.id = HOST_ID;
+    // Insert after the rebalance plan panel
+    const rebalanceHost = document.getElementById('rebalance-panel-host');
+    if (rebalanceHost && rebalanceHost.parentElement) {
+      rebalanceHost.insertAdjacentElement('afterend', host);
+    } else {
+      document.body.insertBefore(host, document.body.firstChild);
+    }
+
+    const root = host.attachShadow({ mode: 'open' });
+    const wrap = document.createElement('div');
+    wrap.innerHTML = `
+      <style>
+        :host { all: initial; display:block; width:100%; }
+        .card { width:100%; background:#fff; color:#1f2937; border:1px solid #e5e7eb; border-radius:10px; box-shadow:0 2px 8px rgba(0,0,0,.08); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; margin: 12px 0; }      
+        .header { display:flex; align-items:center; justify-content:space-between; padding:10px 12px; border-bottom:1px solid #f3f4f6; background:#03ab95; color: white; border-top-left-radius:10px; border-top-right-radius:10px; }
+        .title { font-weight:700; font-size:14px; margin:0; color: white; }
+        .controls { display:flex; gap:10px; align-items:center; }
+        .toggle-btn { padding:6px 10px; border:1px solid #beebe4; background:#e6f7f5; color:#028a7a; border-radius:6px; font-size:12px; cursor:pointer; }
+        .body { padding:10px 12px; }
+        .table-wrap { max-height:420px; overflow:auto; margin-top:8px; }
+        .class-section { margin-bottom: 20px; }
+        .class-title { font-size: 16px; font-weight: 700; color: #1f2937; border-bottom: 2px solid #03ab95; padding-bottom: 4px; margin-bottom: 10px; }
+        table { width:100%; border-collapse:collapse; font-size:12px; }
+        thead th { position:sticky; top:0; background:#e6f7f5; z-index:1; text-align:left; padding:6px 8px; border-bottom:1px solid #beebe4; font-weight: 600; color: #028a7a; }
+        tbody td { padding:6px 8px; border-bottom:1px solid #f3f4f6; vertical-align:middle; }
+        .num { text-align:right; }
+        .muted { color:#6b7280; }
+      </style>
+      <div class="card">
+        <div class="header">
+          <h3 class="title">Meus Ativos por Classe</h3>
+          <div class="controls">
+            <button id="refreshAllAssets" class="toggle-btn" type="button">Atualizar</button>
+            <button id="toggleAllAssets" class="toggle-btn" type="button">Ocultar</button>
+          </div>
+        </div>
+        <div class="body" id="allAssetsBodyWrap">
+          <div id="allAssetsContent" class="table-wrap"></div>
+        </div>
+      </div>
+    `;
+    root.appendChild(wrap);
+
+    const $ = (sel) => root.querySelector(sel);
+    const allAssetsContent = $('#allAssetsContent');
+    const allAssetsBodyWrap = $('#allAssetsBodyWrap');
+    const toggleAllAssets = $('#toggleAllAssets');
+    const refreshAllAssets = $('#refreshAllAssets');
+
+    async function recomputeAllAssets() {
+      const holdings = await new Promise(r => chrome.storage.local.get(['my_portfolio_holdings'], res => r(res.my_portfolio_holdings)));
+
+      allAssetsContent.innerHTML = '';
+
+      if (!holdings || typeof holdings !== 'object' || Object.keys(holdings).length === 0) {
+        allAssetsContent.innerHTML = `<div class="muted" style="text-align:center;padding:12px;">Clique em "Atualizar Meus Ativos" em um dos painéis acima para carregar seus ativos.</div>`;
+        return;
+      }
+
+      const groupedAssets = {};
+      Object.entries(holdings).forEach(([ticker, data]) => {
+        const assetClass = classifyAsset(ticker);
+        if (!groupedAssets[assetClass]) {
+          groupedAssets[assetClass] = [];
+        }
+        groupedAssets[assetClass].push({
+          code: ticker,
+          qty: data.qty,
+          price: data.price,
+          totalValue: (Number.isFinite(data.price) && Number.isFinite(data.qty)) ? data.price * data.qty : 0,
+        });
+      });
+
+      const classOrder = ['Ações', 'FIIs', 'ETF', 'FI-Infra', 'FIAGRO', 'ETF Exterior'];
+      const sortedClasses = Object.keys(groupedAssets).sort((a, b) => {
+        const indexA = classOrder.indexOf(a);
+        const indexB = classOrder.indexOf(b);
+        if (indexA !== -1 && indexB !== -1) return indexA - indexB;
+        if (indexA !== -1) return -1;
+        if (indexB !== -1) return 1;
+        return a.localeCompare(b);
+      });
+
+      for (const assetClass of sortedClasses) {
+        const assets = groupedAssets[assetClass].sort((a, b) => b.totalValue - a.totalValue);
+        const section = document.createElement('div');
+        section.className = 'class-section';
+        section.innerHTML = `
+          <h4 class="class-title">${assetClass} (${assets.length})</h4>
+          <table>
+            <thead>
+              <tr>
+                <th>Ticker</th>
+                <th class="num">Qtd</th>
+                <th class="num">Preço</th>
+                <th class="num">Valor Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${assets.map(asset => `
+                <tr>
+                  <td>${asset.code}</td>
+                  <td class="num">${asset.qty}</td>
+                  <td class="num">${Number.isFinite(asset.price) ? fmtBRL(asset.price) : '<span class="muted">—</span>'}</td>
+                  <td class="num">${Number.isFinite(asset.totalValue) ? fmtBRL(asset.totalValue) : '<span class="muted">—</span>'}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        `;
+        allAssetsContent.appendChild(section);
+      }
+    }
+
+    refreshAllAssets.addEventListener('click', recomputeAllAssets);
+
+    const COLLAPSE_KEY = 'all_assets_panel_collapsed';
+    const loadCollapsed = () => new Promise(r => chrome.storage.sync.get([COLLAPSE_KEY], res => r(Boolean(res?.[COLLAPSE_KEY]))));
+    const saveCollapsed = (v) => new Promise(r => chrome.storage.sync.set({ [COLLAPSE_KEY]: Boolean(v) }, r));
+    
+    function applyCollapseState(collapsed) {
+      allAssetsBodyWrap.style.display = collapsed ? 'none' : 'block';
+      toggleAllAssets.textContent = collapsed ? 'Mostrar' : 'Ocultar';
+    }
+
+    toggleAllAssets.addEventListener('click', async () => {
+      const nowCollapsed = allAssetsBodyWrap.style.display !== 'none';
+      applyCollapseState(nowCollapsed);
+      await saveCollapsed(nowCollapsed);
+    });
+
+    loadCollapsed().then(applyCollapseState);
+    setTimeout(recomputeAllAssets, 500);
+  }
+
   // Boot: wait a bit for page scripts to render the table
   const MAX_TRIES = 20;
   let tries = 0;
@@ -4389,6 +4829,7 @@ function readHoldingsFromPage(rootEl) {
       try { initPortfolioDistributionPanel(); } catch {}
       try { initRebalancePanel(); } catch {}
       try { initEqualWeightPlanPanel(); } catch {}
+      try { initAllAssetsPanel(); } catch {}
     } else if (tries >= MAX_TRIES) {
       clearInterval(iv);
       fetchRanksAndThen(() => {
@@ -4398,8 +4839,128 @@ function readHoldingsFromPage(rootEl) {
       try { initPortfolioDistributionPanel(); } catch {}
       try { initRebalancePanel(); } catch {}
       try { initEqualWeightPlanPanel(); } catch {}
+      try { initAllAssetsPanel(); } catch {}
     }
   }, 500);
 
   // Overlay menu handled by a lightweight global content script (overlay.js).
+  
+  // Function to display holdings table by class
+  function displayHoldingsTable() {
+    getHoldingsByClassFromCache((holdingsByClass) => {
+      if (!holdingsByClass || Object.keys(holdingsByClass).length === 0) {
+        console.log('📊 TABELA DE ATIVOS POR CLASSE');
+        console.log('═══════════════════════════════════');
+        console.log('❌ Nenhum ativo encontrado no cache.');
+        console.log('💡 Execute primeiro a leitura dos dados na página da carteira.');
+        return;
+      }
+
+      console.log('📊 TABELA DE ATIVOS POR CLASSE');
+      console.log('═══════════════════════════════════');
+      console.log(`📅 Última atualização: ${holdingsByClass.lastUpdated || 'Não disponível'}`);
+      console.log('');
+
+      // Process each asset class
+      Object.keys(holdingsByClass).forEach(className => {
+        if (className === 'lastUpdated') return; // Skip metadata
+        
+        const holdings = holdingsByClass[className];
+        const assetCount = Object.keys(holdings).length;
+        
+        if (assetCount === 0) return;
+        
+        console.log(`🏷️  ${className.toUpperCase()}`);
+        console.log('─'.repeat(50));
+        
+        // Calculate totals for this class
+        let classTotal = 0;
+        let classInvested = 0;
+        
+        // Create table data
+        const tableData = [];
+        
+        Object.keys(holdings).forEach(ticker => {
+          const holding = holdings[ticker];
+          const currentValue = holding.currentValue || 0;
+          const invested = (holding.avgPrice || 0) * (holding.qty || 0);
+          const profitLoss = currentValue - invested;
+          const profitLossPercent = invested > 0 ? ((profitLoss / invested) * 100) : 0;
+          
+          classTotal += currentValue;
+          classInvested += invested;
+          
+          tableData.push({
+            ticker: ticker,
+            qty: holding.qty || 0,
+            avgPrice: holding.avgPrice || 0,
+            currentPrice: holding.currentPrice || 0,
+            invested: invested,
+            currentValue: currentValue,
+            profitLoss: profitLoss,
+            profitLossPercent: profitLossPercent
+          });
+        });
+        
+        // Sort by current value (descending)
+        tableData.sort((a, b) => b.currentValue - a.currentValue);
+        
+        // Display table
+        console.log('┌─────────┬──────┬──────────┬───────────┬─────────────┬─────────────┬──────────────┬─────────┐');
+        console.log('│ Ticker  │ Qtd  │ P.Médio  │ P.Atual   │ Investido   │ Atual       │ Lucro/Perda  │   %     │');
+        console.log('├─────────┼──────┼──────────┼───────────┼─────────────┼─────────────┼──────────────┼─────────┤');
+        
+        tableData.forEach(asset => {
+          const ticker = asset.ticker.padEnd(7).substring(0, 7);
+          const qty = asset.qty.toString().padStart(4).substring(0, 4);
+          const avgPrice = `R$${asset.avgPrice.toFixed(2)}`.padStart(8).substring(0, 8);
+          const currentPrice = `R$${asset.currentPrice.toFixed(2)}`.padStart(9).substring(0, 9);
+          const invested = `R$${asset.invested.toFixed(2)}`.padStart(11).substring(0, 11);
+          const currentValue = `R$${asset.currentValue.toFixed(2)}`.padStart(11).substring(0, 11);
+          const profitLoss = `R$${asset.profitLoss.toFixed(2)}`.padStart(12).substring(0, 12);
+          const percent = `${asset.profitLossPercent >= 0 ? '+' : ''}${asset.profitLossPercent.toFixed(1)}%`.padStart(7).substring(0, 7);
+          
+          console.log(`│ ${ticker} │ ${qty} │ ${avgPrice} │ ${currentPrice} │ ${invested} │ ${currentValue} │ ${profitLoss} │ ${percent} │`);
+        });
+        
+        console.log('└─────────┴──────┴──────────┴───────────┴─────────────┴─────────────┴──────────────┴─────────┘');
+        
+        // Class summary
+        const classProfitLoss = classTotal - classInvested;
+        const classProfitLossPercent = classInvested > 0 ? ((classProfitLoss / classInvested) * 100) : 0;
+        
+        console.log(`📊 RESUMO - ${className}:`);
+        console.log(`   • ${assetCount} ativos`);
+        console.log(`   • Investido: R$ ${classInvested.toFixed(2)}`);
+        console.log(`   • Valor atual: R$ ${classTotal.toFixed(2)}`);
+        console.log(`   • Lucro/Perda: R$ ${classProfitLoss.toFixed(2)} (${classProfitLossPercent >= 0 ? '+' : ''}${classProfitLossPercent.toFixed(2)}%)`);
+        console.log('');
+      });
+      
+      // Overall summary
+      const stats = getHoldingsStatsByClass(holdingsByClass);
+      console.log('📈 RESUMO GERAL DA CARTEIRA');
+      console.log('═══════════════════════════════════');
+      console.log(`💰 Valor total: R$ ${stats.totalValue.toFixed(2)}`);
+      console.log(`📊 Total de ativos: ${stats.totalAssets}`);
+      console.log(`💵 Total investido: R$ ${stats.totalInvested.toFixed(2)}`);
+      console.log(`📊 Lucro/Perda total: R$ ${stats.totalProfitLoss.toFixed(2)} (${stats.totalProfitLossPercentage >= 0 ? '+' : ''}${stats.totalProfitLossPercentage.toFixed(2)}%)`);
+      console.log('');
+      console.log('🏷️  Distribuição por classe:');
+      Object.keys(stats.byClass).forEach(className => {
+        const classStats = stats.byClass[className];
+        const percentage = stats.totalValue > 0 ? ((classStats.totalValue / stats.totalValue) * 100) : 0;
+        console.log(`   • ${className}: R$ ${classStats.totalValue.toFixed(2)} (${percentage.toFixed(1)}%)`);
+      });
+    });
+  }
+
+  // Expose utility functions globally for debugging
+  window.debugPortfolio = {
+    displayHoldingsSummary,
+    displayHoldingsTable,
+    getHoldingsByClassFromCache,
+    getHoldingsStatsByClass,
+    saveHoldingsByClassToCache
+  };
 })();
